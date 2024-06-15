@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException, status, BackgroundTasks
 from pydantic import BaseModel, Field
 from starlette.requests import Request
 from todoist_api_python.api_async import TodoistAPIAsync
+import requests
 
 # Load environment variables from .env file
 load_dotenv()
@@ -45,8 +46,12 @@ async def get_section_name(section_id):
     return section.name if section else None
 
 async def move_task_to_project(task_id, project_id):
-    await todoist_api.update_task(task_id=task_id, project_id=project_id)
-    logging.info(f"Moved task {task_id} to project {project_id}")
+    try:
+        await todoist_api.update_task(task_id=task_id, project_id=project_id)
+        logging.info(f"Moved task {task_id} to project {project_id}")
+    except requests.exceptions.HTTPError as e:
+        logging.error(f"Failed to move task {task_id} to project {project_id}. Error: {str(e)}")
+        # Handle the error or take alternative actions
 
 async def process_task(task_id, section_id, content):
     section_name = await get_section_name(section_id)
