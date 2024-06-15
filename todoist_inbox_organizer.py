@@ -1,12 +1,14 @@
 import os
 from dotenv import load_dotenv
 import logging
+from datetime import datetime, timedelta
 from typing import Annotated
 from fastapi import FastAPI, HTTPException, status, BackgroundTasks
 from pydantic import BaseModel, Field
 from starlette.requests import Request
 from todoist_api_python.api_async import TodoistAPIAsync
 import requests
+import uuid
 
 # Load environment variables from .env file
 load_dotenv()
@@ -45,13 +47,33 @@ async def get_section_name(section_id):
     section = await todoist_api.get_section(section_id)
     return section.name if section else None
 
+
+
 async def move_task_to_project(task_id, project_id):
     try:
-        await todoist_api.update_task(task_id=task_id, project_id=project_id)
-        logging.info(f"Moved task {task_id} to project {project_id}")
-    except requests.exceptions.HTTPError as e:
+        body = {
+            "commands": [
+                {
+                    "type": "item_move",
+                    "args": {"id": task_id, "project_id": project_id},
+                    "uuid": str(uuid.uuid4()),
+                }
+            ]
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {TODOIST_API_KEY}"
+        }
+        response = requests.post("https://api.todoist.com/sync/v9/sync", json=body, headers=headers)
+        if response.status_code == 200:
+            logging.info(f"Moved task {task_id} to project {project_id}")
+            return True
+        else:
+            logging.error(f"Failed to move task {task_id} to project {project_id}. Status code: {response.status_code}")
+            return False
+    except requests.exceptions.RequestException as e:
         logging.error(f"Failed to move task {task_id} to project {project_id}. Error: {str(e)}")
-        # Handle the error or take alternative actions
+        return False
 
 async def process_task(task_id, section_id, content):
     section_name = await get_section_name(section_id)
@@ -62,6 +84,10 @@ async def process_task(task_id, section_id, content):
     else:
         logging.info(f"Skipped task {task_id} as it has no matching section.")
 
+
+
+processed_tasks = {}
+
 @app.post("/todoist/")
 async def todoist_webhook(
     webhook: Webhook,
@@ -71,8 +97,20 @@ async def todoist_webhook(
         task_id = webhook.event_data.id
         section_id = webhook.event_data.section_id
         content = webhook.event_data.content
+
+        # Check if the task has been processed recently
+        if task_id in processed_tasks:
+            last_processed_time = processed_tasks[task_id]
+            if datetime.now() - last_processed_time < timedelta(seconds=5):
+                logging.info(f"Skipping task {task_id} as it was processed recently.")
+                return "ok"
+
         logging.info(f"Task {task_id} {webhook.event_name.split(':')[1]} in section {section_id}")
         background_tasks.add_task(process_task, task_id, section_id, content)
+
+        # Update the processed tasks dictionary
+        processed_tasks[task_id] = datetime.now()
+
     return "ok"
 
 @app.exception_handler(Exception)
