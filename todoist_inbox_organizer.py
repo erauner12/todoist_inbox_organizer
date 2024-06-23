@@ -33,6 +33,8 @@ SECTION_TO_LABEL_MAPPING = {
     "Work": "context/work",
     "Home": "context/home",
     "Side": "context/side",
+    "Move to Immediate": "move/immediate",
+    "Move to Parallel": "move/parallel",
 }
 
 LABEL_TO_PROJECT_MAPPING = {
@@ -187,15 +189,15 @@ async def process_task(task_id, section_id, content):
     else:
         logging.info(f"Skipped task {task_id} as it has no matching section.")
 
-async def get_immediate_section_id(project_id):
+async def get_section_id(project_id, section_prefix):
     try:
         sections = await todoist_api.get_sections(project_id=project_id)
         for section in sections:
-            if section.name.startswith("Immediate--"):
+            if section.name.startswith(section_prefix):
                 return section.id
         return None
     except Exception as e:
-        logging.error(f"Failed to get Immediate section for project {project_id}. Error: {str(e)}")
+        logging.error(f"Failed to get section for project {project_id}. Error: {str(e)}")
         return None
 
 async def move_task_to_project(task_id, project_id):
@@ -229,27 +231,41 @@ async def move_task_to_project(task_id, project_id):
         logging.error(f"Failed to move task {task_id} to project {project_id}. Error: {str(e)}")
         return False
 
-async def move_task_to_project_and_immediate(task_id, project_id):
+async def move_task_to_project_and_section(task_id, project_id, section_prefix):
     try:
         # Step 1: Move task to the project
-        if not await move_task_to_project(task_id, project_id):
+        move_to_project_command = {
+            "type": "item_move",
+            "args": {
+                "id": task_id,
+                "project_id": project_id
+            },
+            "uuid": str(uuid.uuid4()),
+        }
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {TODOIST_API_KEY}"
+        }
+        
+        response = requests.post("https://api.todoist.com/sync/v9/sync", 
+                                 json={"commands": [move_to_project_command]}, 
+                                 headers=headers)
+        
+        if response.status_code != 200:
+            logging.error(f"Failed to move task {task_id} to project {project_id}. Status code: {response.status_code}")
             return False
 
-        # Step 2: Move task to the Immediate section (if it exists)
-        immediate_section_id = await get_immediate_section_id(project_id)
-        if immediate_section_id:
+        # Step 2: Move task to the specified section (if it exists)
+        section_id = await get_section_id(project_id, section_prefix)
+        if section_id:
             move_to_section_command = {
                 "type": "item_move",
                 "args": {
                     "id": task_id,
-                    "section_id": immediate_section_id
+                    "section_id": section_id
                 },
                 "uuid": str(uuid.uuid4()),
-            }
-            
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {TODOIST_API_KEY}"
             }
             
             response = requests.post("https://api.todoist.com/sync/v9/sync", 
@@ -257,10 +273,11 @@ async def move_task_to_project_and_immediate(task_id, project_id):
                                      headers=headers)
             
             if response.status_code != 200:
-                logging.error(f"Failed to move task {task_id} to section {immediate_section_id}. Status code: {response.status_code}")
+                logging.error(f"Failed to move task {task_id} to section {section_id}. Status code: {response.status_code}")
                 return False
 
-        logging.info(f"Successfully moved task {task_id} to project {project_id} and Immediate section")
+        logging.info(f"Successfully moved task {task_id} to project {project_id}" + 
+                     (f" and {section_prefix} section" if section_id else ""))
         return True
 
     except requests.exceptions.RequestException as e:
@@ -273,10 +290,10 @@ async def process_move_section(task_id, move_type):
         for label in task.labels:
             if label in LABEL_TO_PROJECT_MAPPING:
                 target_project_id = LABEL_TO_PROJECT_MAPPING[label]
-                if move_type == "move/project":
-                    success = await move_task_to_project(task_id, target_project_id)
-                elif move_type == "move/immediate":
-                    success = await move_task_to_project_and_immediate(task_id, target_project_id)
+                if move_type == "move/immediate":
+                    success = await move_task_to_project_and_section(task_id, target_project_id, "Immediate--")
+                elif move_type == "move/parallel":
+                    success = await move_task_to_project_and_section(task_id, target_project_id, "Parallel=-")
                 else:
                     logging.error(f"Unknown move type: {move_type}")
                     return
