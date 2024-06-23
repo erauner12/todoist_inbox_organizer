@@ -40,9 +40,9 @@ LABEL_TO_PROJECT_MAPPING = {
 }
 
 DUE_TIME_SECTIONS = {
-    "Due 9am": "today at 09:00",
-    "Due 12pm": "today at 12:00",
-    "Due 5pm": "today at 17:00",
+    "Due 9am": {"time": "09:00", "string": "today 9am"},
+    "Due 12pm": {"time": "12:00", "string": "today 12pm"},
+    "Due 5pm": {"time": "17:00", "string": "today 5pm"},
 }
 
 class Task(BaseModel):
@@ -111,14 +111,29 @@ async def move_task_to_project(task_id, project_id):
         logging.error(f"Failed to move task {task_id} to project {project_id}. Error: {str(e)}")
         return False
 
-async def set_due_date(task_id, due_string):
+async def set_due_date(task_id, due_string, time=None):
     try:
+        today = datetime.now(pytz.UTC).strftime("%Y-%m-%d")
+        due = {
+            "string": due_string,
+            "lang": "en",
+            "is_recurring": False
+        }
+        
+        if time:
+            due["date"] = f"{today}T{time}:00Z"
+        else:
+            due["date"] = today
+
         body = {
             "commands": [
                 {
                     "type": "item_update",
-                    "args": {"id": task_id, "due_string": due_string},
                     "uuid": str(uuid.uuid4()),
+                    "args": {
+                        "id": task_id,
+                        "due": due
+                    }
                 }
             ]
         }
@@ -126,14 +141,14 @@ async def set_due_date(task_id, due_string):
             "Content-Type": "application/json",
             "Authorization": f"Bearer {TODOIST_API_KEY}"
         }
-        response = requests.post("https://api.todoist.com/sync/v9/sync", json=body, headers=headers)
+        response = requests.post("https://api.todoist.com/sync/v9/sync", data=json.dumps(body), headers=headers)
         if response.status_code == 200:
             logging.info(f"Set due date to '{due_string}' for task {task_id}")
             return True
         else:
             logging.error(f"Failed to set due date for task {task_id}. Status code: {response.status_code}")
             return False
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         logging.error(f"Failed to set due date for task {task_id}. Error: {str(e)}")
         return False
 
@@ -143,9 +158,9 @@ async def process_task(task_id, section_id, content):
         await set_due_date(task_id, "today")
         logging.info(f"Processed task {task_id}. Set due date to today")
     elif section_name in DUE_TIME_SECTIONS:
-        due_string = DUE_TIME_SECTIONS[section_name]
-        await set_due_date(task_id, due_string)
-        logging.info(f"Processed task {task_id}. Set due date to {due_string}")
+        due_info = DUE_TIME_SECTIONS[section_name]
+        await set_due_date(task_id, due_info["string"], due_info["time"])
+        logging.info(f"Processed task {task_id}. Set due date to {due_info['string']}")
     elif section_name and section_name in SECTION_TO_LABEL_MAPPING:
         label = SECTION_TO_LABEL_MAPPING[section_name]
         await add_label_to_task(task_id, label)
