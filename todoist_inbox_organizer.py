@@ -187,15 +187,83 @@ async def process_task(task_id, section_id, content):
     else:
         logging.info(f"Skipped task {task_id} as it has no matching section.")
 
+async def get_immediate_section_id(project_id):
+    try:
+        sections = await todoist_api.get_sections(project_id=project_id)
+        for section in sections:
+            if section.name.startswith("Immediate--"):
+                return section.id
+        return None
+    except Exception as e:
+        logging.error(f"Failed to get Immediate section for project {project_id}. Error: {str(e)}")
+        return None
+
+async def move_task_to_project_and_section(task_id, project_id):
+    try:
+        # Step 1: Move task to the project
+        move_to_project_command = {
+            "type": "item_move",
+            "args": {
+                "id": task_id,
+                "project_id": project_id
+            },
+            "uuid": str(uuid.uuid4()),
+        }
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {TODOIST_API_KEY}"
+        }
+        
+        response = requests.post("https://api.todoist.com/sync/v9/sync", 
+                                 json={"commands": [move_to_project_command]}, 
+                                 headers=headers)
+        
+        if response.status_code != 200:
+            logging.error(f"Failed to move task {task_id} to project {project_id}. Status code: {response.status_code}")
+            return False
+
+        # Step 2: Move task to the Immediate section (if it exists)
+        immediate_section_id = await get_immediate_section_id(project_id)
+        if immediate_section_id:
+            move_to_section_command = {
+                "type": "item_move",
+                "args": {
+                    "id": task_id,
+                    "section_id": immediate_section_id
+                },
+                "uuid": str(uuid.uuid4()),
+            }
+            
+            response = requests.post("https://api.todoist.com/sync/v9/sync", 
+                                     json={"commands": [move_to_section_command]}, 
+                                     headers=headers)
+            
+            if response.status_code != 200:
+                logging.error(f"Failed to move task {task_id} to section {immediate_section_id}. Status code: {response.status_code}")
+                return False
+
+        logging.info(f"Successfully moved task {task_id} to project {project_id}" + 
+                     (f" and Immediate section {immediate_section_id}" if immediate_section_id else ""))
+        return True
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to move task {task_id}. Error: {str(e)}")
+        return False
+
+# Update the process_move_section function to use the new move_task_to_project_and_section function
 async def process_move_section(task_id):
     task = await todoist_api.get_task(task_id)
     if task and task.labels:
         for label in task.labels:
             if label in LABEL_TO_PROJECT_MAPPING:
                 target_project_id = LABEL_TO_PROJECT_MAPPING[label]
-                await move_task_to_project(task_id, target_project_id)
-                logging.info(f"Moved task {task_id} to project {target_project_id} based on label {label}")
-                return
+                success = await move_task_to_project_and_section(task_id, target_project_id)
+                if success:
+                    logging.info(f"Moved task {task_id} to project {target_project_id} based on label {label}")
+                    return
+                else:
+                    logging.error(f"Failed to move task {task_id} to project {target_project_id}")
     logging.info(f"Task {task_id} has no matching label for moving.")
 
 processed_tasks = {}
