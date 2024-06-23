@@ -35,6 +35,7 @@ SECTION_TO_LABEL_MAPPING = {
     "Side": "context/side",
     "Move to Immediate": "move/immediate",
     "Move to Parallel": "move/parallel",
+    "Move to project Inbox": "move/inbox",  # Add this new mapping
 }
 
 LABEL_TO_PROJECT_MAPPING = {
@@ -284,6 +285,7 @@ async def move_task_to_project_and_section(task_id, project_id, section_prefix):
         logging.error(f"Failed to move task {task_id}. Error: {str(e)}")
         return False
 
+
 async def process_move_section(task_id, move_type):
     task = await todoist_api.get_task(task_id)
     if task and task.labels:
@@ -294,6 +296,8 @@ async def process_move_section(task_id, move_type):
                     success = await move_task_to_project_and_section(task_id, target_project_id, "Immediate--")
                 elif move_type == "move/parallel":
                     success = await move_task_to_project_and_section(task_id, target_project_id, "Parallel=-")
+                elif move_type == "move/inbox":
+                    success = await move_task_to_project(task_id, target_project_id)  # Only move to project, not to a specific section
                 else:
                     logging.error(f"Unknown move type: {move_type}")
                     return
