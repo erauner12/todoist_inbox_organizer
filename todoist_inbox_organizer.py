@@ -42,9 +42,9 @@ LABEL_TO_PROJECT_MAPPING = {
 }
 
 DUE_TIME_SECTIONS = {
-    "Due 9am": {"due_string": "9am", "due_lang": "en"},
-    "Due 12pm": {"due_string": "12pm", "due_lang": "en"},
-    "Due 5pm": {"due_string": "5pm", "due_lang": "en"},
+    "Due 9am": {"due_string": "today 9am", "due_lang": "en"},
+    "Due 12pm": {"due_string": "today 12pm", "due_lang": "en"},
+    "Due 5pm": {"due_string": "today 5pm", "due_lang": "en"},
 }
 
 class Task(BaseModel):
@@ -102,11 +102,24 @@ async def move_task_to_project(task_id, project_id):
         logging.error(f"Failed to move task {task_id} to project {project_id}. Error: {str(e)}")
         return False
 
-async def set_due_date(task_id, due_string, due_lang="en"):
+async def set_due_date(task_id, due_string, due_lang="en", add_duration=False):
     try:
-        updated_task = todoist_sync_api.update_task(task_id=task_id, due_string=due_string, due_lang=due_lang)
+        update_args = {
+            "task_id": task_id,
+            "due_string": due_string,
+            "due_lang": due_lang
+        }
+        
+        if add_duration:
+            update_args["duration"] = 60
+            update_args["duration_unit"] = "minute"
+        
+        updated_task = todoist_sync_api.update_task(**update_args)
+        
         if updated_task:
             logging.info(f"Set due date to '{due_string}' for task {task_id}")
+            if add_duration:
+                logging.info(f"Added 1 hour duration to task {task_id}")
             return True
         else:
             logging.error(f"Failed to set due date for task {task_id}")
@@ -122,8 +135,8 @@ async def process_task(task_id, section_id, content):
         logging.info(f"Processed task {task_id}. Set due date to today")
     elif section_name in DUE_TIME_SECTIONS:
         due_info = DUE_TIME_SECTIONS[section_name]
-        await set_due_date(task_id, due_info["due_string"], due_info["due_lang"])
-        logging.info(f"Processed task {task_id}. Set due date to {due_info['due_string']}")
+        await set_due_date(task_id, due_info["due_string"], due_info["due_lang"], add_duration=True)
+        logging.info(f"Processed task {task_id}. Set due date to {due_info['due_string']} with 1 hour duration")
     elif section_name and section_name in SECTION_TO_LABEL_MAPPING:
         label = SECTION_TO_LABEL_MAPPING[section_name]
         await add_label_to_task(task_id, label)
