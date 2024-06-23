@@ -105,7 +105,18 @@ async def move_task_to_project(task_id, project_id):
 async def get_tasks_due_at_time(due_time):
     try:
         all_tasks = await todoist_api.get_tasks()
-        tasks_at_time = [task for task in all_tasks if task.due and task.due.datetime and task.due.datetime.endswith(due_time)]
+        now = datetime.now()
+        target_datetime = now.replace(hour=int(due_time.split(':')[0]), minute=int(due_time.split(':')[1]), second=0, microsecond=0)
+        if target_datetime <= now:
+            target_datetime += timedelta(days=1)
+        
+        tasks_at_time = [
+            task for task in all_tasks 
+            if task.due and task.due.datetime 
+            and datetime.fromisoformat(task.due.datetime) == target_datetime
+        ]
+        
+        logging.debug(f"Tasks due at {target_datetime}: {[t.content for t in tasks_at_time]}")
         return tasks_at_time
     except Exception as e:
         logging.error(f"Failed to get tasks due at {due_time}. Error: {str(e)}")
@@ -113,6 +124,8 @@ async def get_tasks_due_at_time(due_time):
 
 async def set_due_date(task_id, due_string, due_lang="en", add_duration=False):
     try:
+        logging.debug(f"Setting due date for task {task_id} with due_string: {due_string}")
+        
         # Extract the time from the due_string
         time_part = due_string.split()[-1]
         
@@ -120,12 +133,15 @@ async def set_due_date(task_id, due_string, due_lang="en", add_duration=False):
         existing_tasks = await get_tasks_due_at_time(time_part)
         
         if existing_tasks:
+            logging.debug(f"Found {len(existing_tasks)} existing tasks at {time_part}")
             # If tasks exist at this time, schedule for the next hour
-            hour = int(time_part[:-2])
+            hour, minute = map(int, time_part.split(':'))
             new_hour = (hour + 1) % 24
-            new_time = f"{new_hour:02d}:00"
+            new_time = f"{new_hour:02d}:{minute:02d}"
             due_string = f"at {new_time}"
             logging.info(f"Rescheduled task {task_id} to {new_time} due to existing tasks")
+        else:
+            logging.debug(f"No existing tasks found at {time_part}")
         
         update_args = {
             "task_id": task_id,
@@ -137,10 +153,12 @@ async def set_due_date(task_id, due_string, due_lang="en", add_duration=False):
             update_args["duration"] = 60
             update_args["duration_unit"] = "minute"
         
+        logging.debug(f"Updating task with args: {update_args}")
         updated_task = todoist_sync_api.update_task(**update_args)
         
         if updated_task:
             logging.info(f"Set due date to '{due_string}' for task {task_id}")
+            logging.debug(f"Updated task details: {updated_task}")
             if add_duration:
                 logging.info(f"Added 1 hour duration to task {task_id}")
             return True
