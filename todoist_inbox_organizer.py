@@ -6,6 +6,7 @@ from typing import Annotated
 from fastapi import FastAPI, HTTPException, status, BackgroundTasks
 from pydantic import BaseModel, Field
 from starlette.requests import Request
+from todoist_api_python.api import TodoistAPI
 from todoist_api_python.api_async import TodoistAPIAsync
 import requests
 import uuid
@@ -25,6 +26,7 @@ app = FastAPI(
 )
 
 todoist_api = TodoistAPIAsync(TODOIST_API_KEY)
+todoist_sync_api = TodoistAPI(TODOIST_API_KEY)
 
 INBOX_PROJECT_ID = "2236493795"
 SECTION_TO_LABEL_MAPPING = {
@@ -40,9 +42,9 @@ LABEL_TO_PROJECT_MAPPING = {
 }
 
 DUE_TIME_SECTIONS = {
-    "Due 9am": {"time": "09:00", "string": "today 9am"},
-    "Due 12pm": {"time": "12:00", "string": "today 12pm"},
-    "Due 5pm": {"time": "17:00", "string": "today 5pm"},
+    "Due 9am": {"due_string": "9am", "due_lang": "en"},
+    "Due 12pm": {"due_string": "12pm", "due_lang": "en"},
+    "Due 5pm": {"due_string": "5pm", "due_lang": "en"},
 }
 
 class Task(BaseModel):
@@ -61,27 +63,16 @@ async def get_section_name(section_id):
 
 async def add_label_to_task(task_id, label):
     try:
-        body = {
-            "commands": [
-                {
-                    "type": "item_update",
-                    "args": {"id": task_id, "labels": [label]},
-                    "uuid": str(uuid.uuid4()),
-                }
-            ]
-        }
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {TODOIST_API_KEY}"
-        }
-        response = requests.post("https://api.todoist.com/sync/v9/sync", json=body, headers=headers)
-        if response.status_code == 200:
+        task = await todoist_api.get_task(task_id)
+        labels = task.labels + [label] if task.labels else [label]
+        updated_task = todoist_sync_api.update_task(task_id=task_id, labels=labels)
+        if updated_task:
             logging.info(f"Added label {label} to task {task_id}")
             return True
         else:
-            logging.error(f"Failed to add label {label} to task {task_id}. Status code: {response.status_code}")
+            logging.error(f"Failed to add label {label} to task {task_id}")
             return False
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         logging.error(f"Failed to add label {label} to task {task_id}. Error: {str(e)}")
         return False
 
@@ -111,42 +102,14 @@ async def move_task_to_project(task_id, project_id):
         logging.error(f"Failed to move task {task_id} to project {project_id}. Error: {str(e)}")
         return False
 
-async def set_due_date(task_id, due_string, time=None):
+async def set_due_date(task_id, due_string, due_lang="en"):
     try:
-        today = datetime.now(pytz.UTC).strftime("%Y-%m-%d")
-        due = {
-            "string": due_string,
-            "lang": "en",
-            "is_recurring": False
-        }
-        
-        if time:
-            due["date"] = f"{today}T{time}:00Z"
-        else:
-            due["date"] = today
-
-        body = {
-            "commands": [
-                {
-                    "type": "item_update",
-                    "uuid": str(uuid.uuid4()),
-                    "args": {
-                        "id": task_id,
-                        "due": due
-                    }
-                }
-            ]
-        }
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {TODOIST_API_KEY}"
-        }
-        response = requests.post("https://api.todoist.com/sync/v9/sync", data=json.dumps(body), headers=headers)
-        if response.status_code == 200:
+        updated_task = todoist_sync_api.update_task(task_id=task_id, due_string=due_string, due_lang=due_lang)
+        if updated_task:
             logging.info(f"Set due date to '{due_string}' for task {task_id}")
             return True
         else:
-            logging.error(f"Failed to set due date for task {task_id}. Status code: {response.status_code}")
+            logging.error(f"Failed to set due date for task {task_id}")
             return False
     except Exception as e:
         logging.error(f"Failed to set due date for task {task_id}. Error: {str(e)}")
@@ -159,8 +122,8 @@ async def process_task(task_id, section_id, content):
         logging.info(f"Processed task {task_id}. Set due date to today")
     elif section_name in DUE_TIME_SECTIONS:
         due_info = DUE_TIME_SECTIONS[section_name]
-        await set_due_date(task_id, due_info["string"], due_info["time"])
-        logging.info(f"Processed task {task_id}. Set due date to {due_info['string']}")
+        await set_due_date(task_id, due_info["due_string"], due_info["due_lang"])
+        logging.info(f"Processed task {task_id}. Set due date to {due_info['due_string']}")
     elif section_name and section_name in SECTION_TO_LABEL_MAPPING:
         label = SECTION_TO_LABEL_MAPPING[section_name]
         await add_label_to_task(task_id, label)
