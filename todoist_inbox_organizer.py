@@ -10,6 +10,7 @@ from todoist_api_python.api import TodoistAPI
 from todoist_api_python.api_async import TodoistAPIAsync
 import requests
 import uuid
+import json
 
 # Load environment variables from .env file
 load_dotenv()
@@ -52,6 +53,7 @@ DUE_TIME_SECTIONS = {
 
 class Task(BaseModel):
     id: str
+    project_id: str
     section_id: str
     content: str
 
@@ -59,6 +61,35 @@ class Webhook(BaseModel):
     event_name: str
     user_id: str
     event_data: Task
+
+
+async def remove_due_date(task_id):
+    url = 'https://api.todoist.com/sync/v9/sync'
+    headers = {
+        'Authorization': f'Bearer {TODOIST_API_KEY}',
+        'Content-Type': 'application/json'
+    }
+    data = {
+        'commands': json.dumps([
+            {
+                'type': 'item_update',
+                'uuid': str(uuid.uuid4()),
+                'args': {
+                    'id': task_id,
+                    'due': None
+                }
+            }
+        ])
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()
+        logging.info(f"Successfully removed due date from task {task_id}")
+        return True
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to remove due date from task {task_id}. Error: {str(e)}")
+        return False
 
 async def get_section_name(section_id):
     section = await todoist_api.get_section(section_id)
@@ -160,7 +191,7 @@ async def set_due_date(task_id, due_string, due_lang="en", add_duration=False):
         logging.error(f"Failed to set due date for task {task_id}. Error: {str(e)}")
         return False
 
-async def process_task(task_id, section_id, content):
+async def process_task(task_id, project_id, section_id, content):
     section_name = await get_section_name(section_id)
     if section_name == "Due Today":
         await set_due_date(task_id, "today")
@@ -176,6 +207,12 @@ async def process_task(task_id, section_id, content):
         else:
             await add_label_to_task(task_id, label)
             logging.info(f"Processed task {task_id}. Added label {label}")
+    elif section_name and section_name.startswith("Inbox *"):
+        success = await remove_due_date(task_id)
+        if success:
+            logging.info(f"Processed task {task_id}. Removed due date as it was moved to Inbox section")
+        else:
+            logging.error(f"Failed to remove due date from task {task_id}")
     else:
         logging.info(f"Skipped task {task_id} as it has no matching section.")
 
@@ -277,6 +314,7 @@ async def todoist_webhook(
 ):
     if webhook.event_name in ["item:added", "item:updated"]:
         task_id = webhook.event_data.id
+        project_id = webhook.event_data.project_id
         section_id = webhook.event_data.section_id
         content = webhook.event_data.content
 
@@ -287,10 +325,10 @@ async def todoist_webhook(
                 logging.info(f"Skipping task {task_id} as it was processed recently.")
                 return "ok"
 
-        logging.info(f"Task {task_id} {webhook.event_name.split(':')[1]} in section {section_id}")
+        logging.info(f"Task {task_id} {webhook.event_name.split(':')[1]} in project {project_id}, section {section_id}")
         
         if section_id:
-            background_tasks.add_task(process_task, task_id, section_id, content)
+            background_tasks.add_task(process_task, task_id, project_id, section_id, content)
 
         # Update the processed tasks dictionary
         processed_tasks[task_id] = datetime.now()
