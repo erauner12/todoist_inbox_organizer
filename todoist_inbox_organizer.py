@@ -64,6 +64,20 @@ async def get_section_name(section_id):
     section = await todoist_api.get_section(section_id)
     return section.name if section else None
 
+async def get_or_create_inbox_section(project_id):
+    try:
+        sections = await todoist_api.get_sections(project_id=project_id)
+        for section in sections:
+            if section.name.startswith("Inbox *"):
+                return section.id
+        
+        # If no Inbox section exists, create one
+        new_section = await todoist_api.add_section(name="Inbox *", project_id=project_id)
+        return new_section.id
+    except Exception as e:
+        logging.error(f"Failed to get or create Inbox section for project {project_id}. Error: {str(e)}")
+        return None
+
 async def add_label_to_task(task_id, label):
     try:
         task = await todoist_api.get_task(task_id)
@@ -78,31 +92,41 @@ async def add_label_to_task(task_id, label):
     except Exception as e:
         logging.error(f"Failed to add label {label} to task {task_id}. Error: {str(e)}")
         return False
-
-async def move_task_to_project(task_id, project_id):
+    
+async def move_task_to_project_inbox(task_id, project_id):
     try:
-        body = {
-            "commands": [
-                {
-                    "type": "item_move",
-                    "args": {"id": task_id, "project_id": project_id},
-                    "uuid": str(uuid.uuid4()),
-                }
-            ]
+        inbox_section_id = await get_or_create_inbox_section(project_id)
+        if not inbox_section_id:
+            logging.error(f"Failed to get or create Inbox section for project {project_id}")
+            return False
+
+        move_command = {
+            "type": "item_move",
+            "args": {
+                "id": task_id,
+                "section_id": inbox_section_id
+            },
+            "uuid": str(uuid.uuid4()),
         }
+        
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {TODOIST_API_KEY}"
         }
-        response = requests.post("https://api.todoist.com/sync/v9/sync", json=body, headers=headers)
-        if response.status_code == 200:
-            logging.info(f"Moved task {task_id} to project {project_id}")
-            return True
-        else:
-            logging.error(f"Failed to move task {task_id} to project {project_id}. Status code: {response.status_code}")
+        
+        response = requests.post("https://api.todoist.com/sync/v9/sync", 
+                                 json={"commands": [move_command]}, 
+                                 headers=headers)
+        
+        if response.status_code != 200:
+            logging.error(f"Failed to move task {task_id} to Inbox section of project {project_id}. Status code: {response.status_code}")
             return False
+
+        logging.info(f"Successfully moved task {task_id} to Inbox section of project {project_id}")
+        return True
+
     except requests.exceptions.RequestException as e:
-        logging.error(f"Failed to move task {task_id} to project {project_id}. Error: {str(e)}")
+        logging.error(f"Failed to move task {task_id} to Inbox section of project {project_id}. Error: {str(e)}")
         return False
 
 async def get_tasks_due_at_time(due_time):
@@ -201,37 +225,6 @@ async def get_section_id(project_id, section_prefix):
         logging.error(f"Failed to get section for project {project_id}. Error: {str(e)}")
         return None
 
-async def move_task_to_project(task_id, project_id):
-    try:
-        move_command = {
-            "type": "item_move",
-            "args": {
-                "id": task_id,
-                "project_id": project_id
-            },
-            "uuid": str(uuid.uuid4()),
-        }
-        
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {TODOIST_API_KEY}"
-        }
-        
-        response = requests.post("https://api.todoist.com/sync/v9/sync", 
-                                 json={"commands": [move_command]}, 
-                                 headers=headers)
-        
-        if response.status_code != 200:
-            logging.error(f"Failed to move task {task_id} to project {project_id}. Status code: {response.status_code}")
-            return False
-
-        logging.info(f"Successfully moved task {task_id} to project {project_id}")
-        return True
-
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Failed to move task {task_id} to project {project_id}. Error: {str(e)}")
-        return False
-
 async def move_task_to_project_and_section(task_id, project_id, section_prefix):
     try:
         # Step 1: Move task to the project
@@ -297,7 +290,7 @@ async def process_move_section(task_id, move_type):
                 elif move_type == "move/parallel":
                     success = await move_task_to_project_and_section(task_id, target_project_id, "Parallel=-")
                 elif move_type == "move/inbox":
-                    success = await move_task_to_project(task_id, target_project_id)  # Only move to project, not to a specific section
+                    success = await move_task_to_project_inbox(task_id, target_project_id)
                 else:
                     logging.error(f"Unknown move type: {move_type}")
                     return
