@@ -105,12 +105,44 @@ async def move_task_to_project(task_id, project_id):
         logging.error(f"Failed to move task {task_id} to project {project_id}. Error: {str(e)}")
         return False
 
+async def set_due_date_today(task_id):
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        body = {
+            "commands": [
+                {
+                    "type": "item_update",
+                    "args": {"id": task_id, "due": {"date": today}},
+                    "uuid": str(uuid.uuid4()),
+                }
+            ]
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {TODOIST_API_KEY}"
+        }
+        response = requests.post("https://api.todoist.com/sync/v9/sync", json=body, headers=headers)
+        if response.status_code == 200:
+            logging.info(f"Set due date to today for task {task_id}")
+            return True
+        else:
+            logging.error(f"Failed to set due date for task {task_id}. Status code: {response.status_code}")
+            return False
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to set due date for task {task_id}. Error: {str(e)}")
+        return False
+
 async def process_task(task_id, section_id, content):
     section_name = await get_section_name(section_id)
-    if section_name and section_name in SECTION_TO_LABEL_MAPPING:
+    if section_name == "Due Today":
+        await set_due_date_today(task_id)
+        logging.info(f"Processed task {task_id}. Set due date to today")
+    elif section_name and section_name in SECTION_TO_LABEL_MAPPING:
         label = SECTION_TO_LABEL_MAPPING[section_name]
         await add_label_to_task(task_id, label)
         logging.info(f"Processed task {task_id}. Added label {label}")
+    elif section_name == "Move":
+        await process_move_section(task_id)
     else:
         logging.info(f"Skipped task {task_id} as it has no matching section.")
 
@@ -148,10 +180,6 @@ async def todoist_webhook(
         
         if section_id:
             background_tasks.add_task(process_task, task_id, section_id, content)
-        
-        section_name = await get_section_name(section_id)
-        if section_name == "Move":
-            background_tasks.add_task(process_move_section, task_id)
 
         # Update the processed tasks dictionary
         processed_tasks[task_id] = datetime.now()
