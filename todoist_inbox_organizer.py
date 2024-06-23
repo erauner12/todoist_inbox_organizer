@@ -39,6 +39,12 @@ LABEL_TO_PROJECT_MAPPING = {
     "context/side": "2327425662",
 }
 
+DUE_TIME_SECTIONS = {
+    "Due 9am": "today at 09:00",
+    "Due 12pm": "today at 12:00",
+    "Due 5pm": "today at 17:00",
+}
+
 class Task(BaseModel):
     id: str
     section_id: str
@@ -105,14 +111,13 @@ async def move_task_to_project(task_id, project_id):
         logging.error(f"Failed to move task {task_id} to project {project_id}. Error: {str(e)}")
         return False
 
-async def set_due_date_today(task_id):
+async def set_due_date(task_id, due_string):
     try:
-        today = datetime.now().strftime("%Y-%m-%d")
         body = {
             "commands": [
                 {
                     "type": "item_update",
-                    "args": {"id": task_id, "due": {"date": today}},
+                    "args": {"id": task_id, "due_string": due_string},
                     "uuid": str(uuid.uuid4()),
                 }
             ]
@@ -123,7 +128,7 @@ async def set_due_date_today(task_id):
         }
         response = requests.post("https://api.todoist.com/sync/v9/sync", json=body, headers=headers)
         if response.status_code == 200:
-            logging.info(f"Set due date to today for task {task_id}")
+            logging.info(f"Set due date to '{due_string}' for task {task_id}")
             return True
         else:
             logging.error(f"Failed to set due date for task {task_id}. Status code: {response.status_code}")
@@ -135,8 +140,12 @@ async def set_due_date_today(task_id):
 async def process_task(task_id, section_id, content):
     section_name = await get_section_name(section_id)
     if section_name == "Due Today":
-        await set_due_date_today(task_id)
+        await set_due_date(task_id, "today")
         logging.info(f"Processed task {task_id}. Set due date to today")
+    elif section_name in DUE_TIME_SECTIONS:
+        due_string = DUE_TIME_SECTIONS[section_name]
+        await set_due_date(task_id, due_string)
+        logging.info(f"Processed task {task_id}. Set due date to {due_string}")
     elif section_name and section_name in SECTION_TO_LABEL_MAPPING:
         label = SECTION_TO_LABEL_MAPPING[section_name]
         await add_label_to_task(task_id, label)
