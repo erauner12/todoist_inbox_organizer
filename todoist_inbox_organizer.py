@@ -42,9 +42,9 @@ LABEL_TO_PROJECT_MAPPING = {
 }
 
 DUE_TIME_SECTIONS = {
-    "Due 9am": {"due_string": "today 9am", "due_lang": "en"},
-    "Due 12pm": {"due_string": "today 12pm", "due_lang": "en"},
-    "Due 5pm": {"due_string": "today 5pm", "due_lang": "en"},
+    "Due 9am": {"due_string": "at 9am", "due_lang": "en"},
+    "Due 12pm": {"due_string": "at 12pm", "due_lang": "en"},
+    "Due 5pm": {"due_string": "at 5pm", "due_lang": "en"},
 }
 
 class Task(BaseModel):
@@ -102,8 +102,31 @@ async def move_task_to_project(task_id, project_id):
         logging.error(f"Failed to move task {task_id} to project {project_id}. Error: {str(e)}")
         return False
 
+async def get_tasks_due_at_time(due_time):
+    try:
+        all_tasks = await todoist_api.get_tasks()
+        tasks_at_time = [task for task in all_tasks if task.due and task.due.datetime and task.due.datetime.endswith(due_time)]
+        return tasks_at_time
+    except Exception as e:
+        logging.error(f"Failed to get tasks due at {due_time}. Error: {str(e)}")
+        return []
+
 async def set_due_date(task_id, due_string, due_lang="en", add_duration=False):
     try:
+        # Extract the time from the due_string
+        time_part = due_string.split()[-1]
+        
+        # Check for existing tasks at this time
+        existing_tasks = await get_tasks_due_at_time(time_part)
+        
+        if existing_tasks:
+            # If tasks exist at this time, schedule for the next hour
+            hour = int(time_part[:-2])
+            new_hour = (hour + 1) % 24
+            new_time = f"{new_hour:02d}:00"
+            due_string = f"at {new_time}"
+            logging.info(f"Rescheduled task {task_id} to {new_time} due to existing tasks")
+        
         update_args = {
             "task_id": task_id,
             "due_string": due_string,
