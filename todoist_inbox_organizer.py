@@ -213,12 +213,6 @@ async def process_task(task_id, project_id, section_id, content):
             logging.info(f"Processed task {task_id}. Removed due date as it was moved to Inbox section")
         else:
             logging.error(f"Failed to remove due date from task {task_id}")
-    elif section_name in ["Parallel=-", "Immediate--"]:
-        success = await set_due_date_today_9am(task_id)
-        if success:
-            logging.info(f"Processed task {task_id}. Set due date to today at 9am as it was moved to {section_name} section")
-        else:
-            logging.error(f"Failed to set due date for task {task_id}")
     else:
         logging.info(f"Skipped task {task_id} as it has no matching section.")
 
@@ -310,18 +304,6 @@ async def process_move_section(task_id, move_type):
                 else:
                     logging.error(f"Failed to move task {task_id} to project {target_project_id}")
     logging.info(f"Task {task_id} has no matching label for moving.")
-    
-async def set_due_date_today_9am(task_id):
-    try:
-        is_success = todoist_sync_api.update_task(task_id=task_id, due_string="today at 9am")
-        if is_success:
-            logging.info(f"Successfully set due date for task {task_id} to today at 9am")
-        else:
-            logging.error(f"Failed to set due date for task {task_id}")
-        return is_success
-    except Exception as error:
-        logging.error(f"Error setting due date for task {task_id}: {str(error)}")
-        return False
 
 processed_tasks = {}
 
