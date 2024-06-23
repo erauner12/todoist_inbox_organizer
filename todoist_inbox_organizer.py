@@ -27,10 +27,16 @@ app = FastAPI(
 todoist_api = TodoistAPIAsync(TODOIST_API_KEY)
 
 INBOX_PROJECT_ID = "2236493795"
-SECTION_TO_PROJECT_MAPPING = {
-    "Work": "2327425429",
-    "Home": "2244866374",
-    "Side": "2327425662",
+SECTION_TO_LABEL_MAPPING = {
+    "Work": "context/work",
+    "Home": "context/home",
+    "Side": "context/side",
+}
+
+LABEL_TO_PROJECT_MAPPING = {
+    "context/work": "2327425429",
+    "context/home": "2244866374",
+    "context/side": "2327425662",
 }
 
 class Task(BaseModel):
@@ -47,7 +53,31 @@ async def get_section_name(section_id):
     section = await todoist_api.get_section(section_id)
     return section.name if section else None
 
-
+async def add_label_to_task(task_id, label):
+    try:
+        body = {
+            "commands": [
+                {
+                    "type": "item_update",
+                    "args": {"id": task_id, "labels": [label]},
+                    "uuid": str(uuid.uuid4()),
+                }
+            ]
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {TODOIST_API_KEY}"
+        }
+        response = requests.post("https://api.todoist.com/sync/v9/sync", json=body, headers=headers)
+        if response.status_code == 200:
+            logging.info(f"Added label {label} to task {task_id}")
+            return True
+        else:
+            logging.error(f"Failed to add label {label} to task {task_id}. Status code: {response.status_code}")
+            return False
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to add label {label} to task {task_id}. Error: {str(e)}")
+        return False
 
 async def move_task_to_project(task_id, project_id):
     try:
@@ -77,14 +107,23 @@ async def move_task_to_project(task_id, project_id):
 
 async def process_task(task_id, section_id, content):
     section_name = await get_section_name(section_id)
-    if section_name and section_name in SECTION_TO_PROJECT_MAPPING:
-        target_project_id = SECTION_TO_PROJECT_MAPPING[section_name]
-        await move_task_to_project(task_id, target_project_id)
-        logging.info(f"Processed task {task_id}. Moved to project {target_project_id}")
+    if section_name and section_name in SECTION_TO_LABEL_MAPPING:
+        label = SECTION_TO_LABEL_MAPPING[section_name]
+        await add_label_to_task(task_id, label)
+        logging.info(f"Processed task {task_id}. Added label {label}")
     else:
         logging.info(f"Skipped task {task_id} as it has no matching section.")
 
-
+async def process_move_section(task_id):
+    task = await todoist_api.get_task(task_id)
+    if task and task.labels:
+        for label in task.labels:
+            if label in LABEL_TO_PROJECT_MAPPING:
+                target_project_id = LABEL_TO_PROJECT_MAPPING[label]
+                await move_task_to_project(task_id, target_project_id)
+                logging.info(f"Moved task {task_id} to project {target_project_id} based on label {label}")
+                return
+    logging.info(f"Task {task_id} has no matching label for moving.")
 
 processed_tasks = {}
 
@@ -93,7 +132,7 @@ async def todoist_webhook(
     webhook: Webhook,
     background_tasks: BackgroundTasks,
 ):
-    if webhook.event_name in ["item:added", "item:updated"] and webhook.event_data.section_id:
+    if webhook.event_name in ["item:added", "item:updated"]:
         task_id = webhook.event_data.id
         section_id = webhook.event_data.section_id
         content = webhook.event_data.content
@@ -106,7 +145,13 @@ async def todoist_webhook(
                 return "ok"
 
         logging.info(f"Task {task_id} {webhook.event_name.split(':')[1]} in section {section_id}")
-        background_tasks.add_task(process_task, task_id, section_id, content)
+        
+        if section_id:
+            background_tasks.add_task(process_task, task_id, section_id, content)
+        
+        section_name = await get_section_name(section_id)
+        if section_name == "Move":
+            background_tasks.add_task(process_move_section, task_id)
 
         # Update the processed tasks dictionary
         processed_tasks[task_id] = datetime.now()
@@ -120,4 +165,4 @@ async def custom_exception_handler(request: Request, exc: Exception):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8007)
+    uvicorn.run(app, host="0.0.0.0", port=8008)
