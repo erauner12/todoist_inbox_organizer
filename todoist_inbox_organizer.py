@@ -129,46 +129,10 @@ async def move_task_to_project_inbox(task_id, project_id):
         logging.error(f"Failed to move task {task_id} to Inbox section of project {project_id}. Error: {str(e)}")
         return False
 
-async def get_tasks_due_at_time(due_time):
-    try:
-        all_tasks = await todoist_api.get_tasks()
-        now = datetime.now()
-        target_datetime = now.replace(hour=int(due_time.split(':')[0]), minute=int(due_time.split(':')[1]), second=0, microsecond=0)
-        if target_datetime <= now:
-            target_datetime += timedelta(days=1)
-        
-        tasks_at_time = [
-            task for task in all_tasks 
-            if task.due and task.due.datetime 
-            and datetime.fromisoformat(task.due.datetime) == target_datetime
-        ]
-        
-        logging.debug(f"Tasks due at {target_datetime}: {[t.content for t in tasks_at_time]}")
-        return tasks_at_time
-    except Exception as e:
-        logging.error(f"Failed to get tasks due at {due_time}. Error: {str(e)}")
-        return []
-
 async def set_due_date(task_id, due_string, due_lang="en", add_duration=False):
     try:
         logging.debug(f"Setting due date for task {task_id} with due_string: {due_string}")
-        
-        # Extract the time from the due_string
-        time_part = due_string.split()[-1]
-        
-        # Check for existing tasks at this time
-        existing_tasks = await get_tasks_due_at_time(time_part)
-        
-        if existing_tasks:
-            logging.debug(f"Found {len(existing_tasks)} existing tasks at {time_part}")
-            # If tasks exist at this time, schedule for the next hour
-            hour, minute = map(int, time_part.split(':'))
-            new_hour = (hour + 1) % 24
-            new_time = f"{new_hour:02d}:{minute:02d}"
-            due_string = f"at {new_time}"
-            logging.info(f"Rescheduled task {task_id} to {new_time} due to existing tasks")
-        else:
-            logging.debug(f"No existing tasks found at {time_part}")
+
         
         update_args = {
             "task_id": task_id,
@@ -301,25 +265,6 @@ async def process_move_section(task_id, move_type):
                 else:
                     logging.error(f"Failed to move task {task_id} to project {target_project_id}")
     logging.info(f"Task {task_id} has no matching label for moving.")
-
-async def process_task(task_id, section_id, content):
-    section_name = await get_section_name(section_id)
-    if section_name == "Due Today":
-        await set_due_date(task_id, "today")
-        logging.info(f"Processed task {task_id}. Set due date to today")
-    elif section_name in DUE_TIME_SECTIONS:
-        due_info = DUE_TIME_SECTIONS[section_name]
-        await set_due_date(task_id, due_info["due_string"], due_info["due_lang"], add_duration=True)
-        logging.info(f"Processed task {task_id}. Set due date to {due_info['due_string']} with 1 hour duration")
-    elif section_name and section_name in SECTION_TO_LABEL_MAPPING:
-        label = SECTION_TO_LABEL_MAPPING[section_name]
-        if label.startswith("move/"):
-            await process_move_section(task_id, label)
-        else:
-            await add_label_to_task(task_id, label)
-            logging.info(f"Processed task {task_id}. Added label {label}")
-    else:
-        logging.info(f"Skipped task {task_id} as it has no matching section.")
 
 processed_tasks = {}
 
