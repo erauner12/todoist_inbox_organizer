@@ -171,12 +171,14 @@ async def process_task(task_id, section_id, content):
         logging.info(f"Processed task {task_id}. Set due date to {due_info['due_string']} with 1 hour duration")
     elif section_name and section_name in SECTION_TO_LABEL_MAPPING:
         label = SECTION_TO_LABEL_MAPPING[section_name]
-        await add_label_to_task(task_id, label)
-        logging.info(f"Processed task {task_id}. Added label {label}")
-    elif section_name == "Move":
-        await process_move_section(task_id)
+        if label.startswith("move/"):
+            await process_move_section(task_id, label)
+        else:
+            await add_label_to_task(task_id, label)
+            logging.info(f"Processed task {task_id}. Added label {label}")
     else:
         logging.info(f"Skipped task {task_id} as it has no matching section.")
+
 
 async def get_section_id(project_id, section_prefix):
     try:
