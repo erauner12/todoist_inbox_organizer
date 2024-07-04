@@ -14,6 +14,11 @@ import json
 import time
 from collections import defaultdict
 
+from datetime import datetime, timedelta
+
+# At the top of your file, add:
+last_processed_task = {"id": None, "timestamp": None}
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -382,35 +387,38 @@ async def process_task(task_id, project_id, section_id, content):
 
 @app.post("/todoist/")
 async def todoist_webhook(webhook: Webhook, background_tasks: BackgroundTasks):
+    global last_processed_task
+    
     if webhook.event_name in ["item:added", "item:updated"]:
         task_id = webhook.event_data.id
         project_id = webhook.event_data.project_id
         section_id = webhook.event_data.section_id
         content = webhook.event_data.content
 
-        current_time = time.time()
-        task_info = processed_tasks[task_id]
+        current_time = datetime.now()
 
-        if current_time - task_info['timestamp'] < DEDUPLICATION_WINDOW:
-            task_info['count'] += 1
-            if task_info['count'] > 1:
-                logging.info(f"Skipping task {task_id} as it was processed recently (count: {task_info['count']}).")
-                return "ok"
+        # Check if this is a new task or if enough time has passed since the last processed task
+        if (last_processed_task["id"] != task_id or 
+            (last_processed_task["timestamp"] and current_time - last_processed_task["timestamp"] > timedelta(seconds=30))):
+            
+            logging.info(f"Processing task {task_id} {webhook.event_name.split(':')[1]} in project {project_id}, section {section_id}")
+            
+            if section_id:
+                try:
+                    await check_rate_limit()
+                    background_tasks.add_task(process_task, task_id, project_id, section_id, content)
+                    
+                    # Update the last processed task
+                    last_processed_task["id"] = task_id
+                    last_processed_task["timestamp"] = current_time
+                    
+                except HTTPException as e:
+                    if e.status_code == 429:
+                        logging.warning("Rate limit reached. Skipping task processing.")
+                        return "rate limited"
+                    raise
         else:
-            task_info['timestamp'] = current_time
-            task_info['count'] = 1
-
-        logging.info(f"Task {task_id} {webhook.event_name.split(':')[1]} in project {project_id}, section {section_id}")
-        
-        if section_id:
-            try:
-                await check_rate_limit()
-                background_tasks.add_task(process_task, task_id, project_id, section_id, content)
-            except HTTPException as e:
-                if e.status_code == 429:
-                    logging.warning("Rate limit reached. Skipping task processing.")
-                    return "rate limited"
-                raise
+            logging.info(f"Skipping task {task_id} as it's part of a batch update or was recently processed.")
 
     return "ok"
 
