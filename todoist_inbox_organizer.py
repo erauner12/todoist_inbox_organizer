@@ -122,10 +122,11 @@ async def get_section_name(section_id):
         await check_rate_limit()
         section = await todoist_api.get_section(section_id)
         return section.name if section else None
-    except HTTPError as e:
-        if e.status_code == 429:
-            await handle_rate_limit(int(e.headers.get('X-Rate-Limit-Reset', time.time() + 60)))
+    except Exception as e:
+        if hasattr(e, 'status_code') and e.status_code == 429:
+            await handle_rate_limit(int(getattr(e, 'headers', {}).get('X-Rate-Limit-Reset', time.time() + 60)))
             raise HTTPException(status_code=429, detail="Rate limit reached. Try again later.")
+        logging.error(f"Error getting section name: {str(e)}")
         raise
 
 async def get_or_create_inbox_section(project_id):
@@ -139,13 +140,14 @@ async def get_or_create_inbox_section(project_id):
         # If no Inbox section exists, create one
         new_section = await todoist_api.add_section(name="Inbox *", project_id=project_id)
         return new_section.id
-    except HTTPError as e:
-        if e.status_code == 429:
-            await handle_rate_limit(int(e.headers.get('X-Rate-Limit-Reset', time.time() + 60)))
+    except Exception as e:
+        if hasattr(e, 'status_code') and e.status_code == 429:
+            await handle_rate_limit(int(getattr(e, 'headers', {}).get('X-Rate-Limit-Reset', time.time() + 60)))
             raise HTTPException(status_code=429, detail="Rate limit reached. Try again later.")
         logging.error(f"Failed to get or create Inbox section for project {project_id}. Error: {str(e)}")
         return None
-
+    
+    
 async def add_label_to_task(task_id, label):
     try:
         await check_rate_limit()
@@ -162,10 +164,11 @@ async def add_label_to_task(task_id, label):
         else:
             logging.info(f"Label {label} already exists on task {task_id}. No action taken.")
             return True
-    except HTTPError as e:
-        if e.status_code == 429:
-            await handle_rate_limit(int(e.headers.get('X-Rate-Limit-Reset', time.time() + 60)))
+    except Exception as e:
+        if hasattr(e, 'status_code') and e.status_code == 429:
+            await handle_rate_limit(int(getattr(e, 'headers', {}).get('X-Rate-Limit-Reset', time.time() + 60)))
             raise HTTPException(status_code=429, detail="Rate limit reached. Try again later.")
+        logging.error(f"Error adding label to task: {str(e)}")
         raise
     
 async def move_task_to_project_inbox(task_id, project_id):
@@ -232,11 +235,11 @@ async def set_due_date(task_id, due_string, due_lang="en", add_duration=False):
         else:
             logging.error(f"Failed to set due date for task {task_id}")
             return False
-    except HTTPError as e:
-        if e.status_code == 429:
-            await handle_rate_limit(int(e.headers.get('X-Rate-Limit-Reset', time.time() + 60)))
+    except Exception as e:
+        if hasattr(e, 'status_code') and e.status_code == 429:
+            await handle_rate_limit(int(getattr(e, 'headers', {}).get('X-Rate-Limit-Reset', time.time() + 60)))
             raise HTTPException(status_code=429, detail="Rate limit reached. Try again later.")
-        logging.error(f"Failed to set due date for task {task_id}. Error: {str(e)}")
+        logging.error(f"Error setting due date for task: {str(e)}")
         return False
 
 async def get_section_id(project_id, section_prefix):
@@ -247,9 +250,9 @@ async def get_section_id(project_id, section_prefix):
             if section.name.startswith(section_prefix):
                 return section.id
         return None
-    except HTTPError as e:
-        if e.status_code == 429:
-            await handle_rate_limit(int(e.headers.get('X-Rate-Limit-Reset', time.time() + 60)))
+    except Exception as e:
+        if hasattr(e, 'status_code') and e.status_code == 429:
+            await handle_rate_limit(int(getattr(e, 'headers', {}).get('X-Rate-Limit-Reset', time.time() + 60)))
             raise HTTPException(status_code=429, detail="Rate limit reached. Try again later.")
         logging.error(f"Failed to get section for project {project_id}. Error: {str(e)}")
         return None
@@ -332,10 +335,11 @@ async def process_move_section(task_id, move_type):
                     else:
                         logging.error(f"Failed to move task {task_id} to project {target_project_id}")
         logging.info(f"Task {task_id} has no matching label for moving.")
-    except HTTPError as e:
-        if e.status_code == 429:
-            await handle_rate_limit(int(e.headers.get('X-Rate-Limit-Reset', time.time() + 60)))
+    except Exception as e:
+        if hasattr(e, 'status_code') and e.status_code == 429:
+            await handle_rate_limit(int(getattr(e, 'headers', {}).get('X-Rate-Limit-Reset', time.time() + 60)))
             raise HTTPException(status_code=429, detail="Rate limit reached. Try again later.")
+        logging.error(f"Error processing move section: {str(e)}")
         raise
 
 
@@ -369,10 +373,11 @@ async def process_task(task_id, project_id, section_id, content):
                 logging.error(f"Failed to remove due date from task {task_id}")
         else:
             logging.info(f"Skipped task {task_id} as it has no matching section or no changes needed.")
-    except HTTPError as e:
-        if e.status_code == 429:
-            await handle_rate_limit(int(e.headers.get('X-Rate-Limit-Reset', time.time() + 60)))
+    except Exception as e:
+        if hasattr(e, 'status_code') and e.status_code == 429:
+            await handle_rate_limit(int(getattr(e, 'headers', {}).get('X-Rate-Limit-Reset', time.time() + 60)))
             raise HTTPException(status_code=429, detail="Rate limit reached. Try again later.")
+        logging.error(f"Error processing task: {str(e)}")
         raise
 
 @app.post("/todoist/")
