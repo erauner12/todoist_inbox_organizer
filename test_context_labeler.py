@@ -1,6 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, patch, call
 from context_labeler import app, add_context_label, SECTION_TO_LABEL_MAPPING
 
 client = TestClient(app)
@@ -106,3 +106,66 @@ def test_todoist_webhook_no_action():
 
     assert response.status_code == 200
     assert response.json() == {"message": "No action taken"}
+
+def test_todoist_webhook_task_moved_to_work_section():
+    # Simulate task added outside of any section
+    webhook_data_added = {
+        "event_name": "item:added",
+        "user_id": "28192378",
+        "event_data": {
+            "id": "8175729377",
+            "labels": [],
+            "section_id": None,
+        },
+        "initiator": {
+            "id": "28192378",
+        },
+    }
+
+    response = client.post("/todoist/", json=webhook_data_added)
+    assert response.status_code == 200
+    assert response.json() == {"message": "No action taken"}
+
+    # Simulate task moved to work section
+    webhook_data_moved = {
+        "event_name": "item:updated",
+        "user_id": "28192378",
+        "event_data": {
+            "id": "8175729377",
+            "labels": [],
+            "section_id": "151168595",
+        },
+        "initiator": {
+            "id": "28192378",
+        },
+    }
+
+    with patch("context_labeler.add_context_label", new_callable=AsyncMock) as mock_add_context_label:
+        mock_add_context_label.return_value = ["context/work"]
+        response = client.post("/todoist/", json=webhook_data_moved)
+
+    assert response.status_code == 200
+    assert response.json() == {"task_id": "8175729377", "updated_labels": ["context/work"]}
+    mock_add_context_label.assert_called_once_with("8175729377", "151168595", [])
+
+    # Simulate task updated with new label
+    webhook_data_updated = {
+        "event_name": "item:updated",
+        "user_id": "28192378",
+        "event_data": {
+            "id": "8175729377",
+            "labels": ["context/work"],
+            "section_id": "151168595",
+        },
+        "initiator": {
+            "id": "28192378",
+        },
+    }
+
+    with patch("context_labeler.add_context_label", new_callable=AsyncMock) as mock_add_context_label:
+        mock_add_context_label.return_value = ["context/work"]
+        response = client.post("/todoist/", json=webhook_data_updated)
+
+    assert response.status_code == 200
+    assert response.json() == {"task_id": "8175729377", "updated_labels": ["context/work"]}
+    mock_add_context_label.assert_called_once_with("8175729377", "151168595", ["context/work"])
