@@ -1,58 +1,44 @@
 import os
-import asyncio
 from dotenv import load_dotenv
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, Any
 from fastapi import FastAPI, BackgroundTasks
 from pydantic import BaseModel
+from todoist_api_python.api import TodoistAPI
 import requests
 import json
 import time
-from todoist_api_python.api import TodoistAPI
 
-# Load environment variables
 load_dotenv()
 
-# Access environment variables
 DEBUG = os.getenv("DEBUG", "False").lower() == "true"
 TODOIST_API_KEY = os.getenv("TODOIST_API_KEY")
 
-# Logging setup
 logging_format = "%(asctime)s %(levelname)s:%(name)s %(filename)s:%(lineno)d %(funcName)s - %(message)s"
 logging.basicConfig(level=logging.DEBUG if DEBUG else logging.INFO, format=logging_format)
 
-# FastAPI app setup
 app = FastAPI(debug=DEBUG)
 
-# Todoist API setup
 todoist_api = TodoistAPI(TODOIST_API_KEY)
 
-# Todoist API constants
 TODOIST_SYNC_URL = "https://api.todoist.com/sync/v9/sync"
 
-# Mappings and configurations
 INBOX_PROJECT_ID = "2236493795"
 SECTION_TO_LABEL_MAPPING = {
-    "Work": "context/work",
-    "Home": "context/home",
-    "Side": "context/side",
-    "Move to Immediate": "move/immediate",
-    "Move to Parallel": "move/parallel",
-    "Move to project Inbox": "move/inbox",
+    "158952710": "context/work",
+    "157482399": "context/home",
+    "157481756": "context/side",
+    "151168595": "move/immediate",
+    "151168596": "move/parallel",
+    "151168597": "move/inbox",
 }
 LABEL_TO_PROJECT_MAPPING = {
     "context/work": "2327425429",
     "context/home": "2244866374",
     "context/side": "2327425662",
 }
-DUE_TIME_SECTIONS = {
-    "Due 9am": {"due_string": "at 9am", "due_lang": "en"},
-    "Due 12pm": {"due_string": "at 12pm", "due_lang": "en"},
-    "Due 5pm": {"due_string": "at 5pm", "due_lang": "en"},
-}
 
-# Global variables
 sync_token = "*"
 last_sync_time = None
 
@@ -60,14 +46,6 @@ class TodoistWebhook(BaseModel):
     event_name: str
     user_id: str
     event_data: Dict[str, Any]
-
-async def get_section_name(section_id: str) -> str:
-    try:
-        section = todoist_api.get_section(section_id)
-        return section.name
-    except Exception as e:
-        logging.error(f"Error getting section name: {str(e)}")
-        return None
 
 async def add_label_to_task(task_id: str, label: str) -> bool:
     try:
@@ -129,41 +107,57 @@ async def process_task(task: Dict[str, Any]):
     project_id = task["project_id"]
     section_id = task.get("section_id")
 
-    if section_id:
-        section_name = await get_section_name(section_id)
-        
-        if section_name in SECTION_TO_LABEL_MAPPING:
-            label = SECTION_TO_LABEL_MAPPING[section_name]
-            if label.startswith("move/"):
-                if label == "move/immediate":
-                    await move_task_to_project(task_id, project_id)
-                    # Add logic for moving to Immediate section
-                elif label == "move/parallel":
-                    await move_task_to_project(task_id, project_id)
-                    # Add logic for moving to Parallel section
-                elif label == "move/inbox":
-                    await move_task_to_project(task_id, INBOX_PROJECT_ID)
+    logging.info(f"Processing task: {task_id} - {content}")
+
+    if section_id in SECTION_TO_LABEL_MAPPING:
+        label = SECTION_TO_LABEL_MAPPING[section_id]
+        if label.startswith("move/"):
+            if label == "move/immediate":
+                success = await move_task_to_project(task_id, project_id)
+                logging.info(f"Moved task {task_id} to immediate section: {success}")
+            elif label == "move/parallel":
+                success = await move_task_to_project(task_id, project_id)
+                logging.info(f"Moved task {task_id} to parallel section: {success}")
+            elif label == "move/inbox":
+                success = await move_task_to_project(task_id, INBOX_PROJECT_ID)
+                logging.info(f"Moved task {task_id} to inbox: {success}")
+        else:
+            current_labels = task.get("labels", [])
+            if label not in current_labels:
+                success = await add_label_to_task(task_id, label)
+                logging.info(f"Added label {label} to task {task_id}: {success}")
             else:
-                await add_label_to_task(task_id, label)
-        
-        elif section_name == "Due Today":
-            await set_due_date(task_id, "today")
-        
-        elif section_name in DUE_TIME_SECTIONS:
-            due_info = DUE_TIME_SECTIONS[section_name]
-            await set_due_date(task_id, due_info["due_string"], due_info["due_lang"], add_duration=True)
-        
-        elif section_name and section_name.startswith("Inbox *"):
-            await remove_due_date(task_id)
+                logging.info(f"Task {task_id} already has label {label}. No action taken.")
+    
+    elif str(section_id).startswith("inbox_"):
+        if task.get("due"):
+            success = await remove_due_date(task_id)
+            logging.info(f"Removed due date from task {task_id}: {success}")
+        else:
+            logging.info(f"Task {task_id} has no due date. No action taken.")
+    
+    else:
+        logging.info(f"No action taken for task {task_id} in section {section_id}")
 
 async def process_changes(changes: Dict[str, Any]):
-    for item in changes.get("items", []):
-        await process_task(item)
-
-@app.post("/todoist/")
-async def todoist_webhook(webhook: TodoistWebhook, background_tasks: BackgroundTasks):
-    background_tasks.add_task(sync_and_process)
-    return {"status": "Processing started"}
+    items = changes.get("items", [])
+    
+    sorted_items = sorted(items, key=lambda x: x.get('date_added', ''), reverse=True)
+    
+    processed_tasks = set()
+    
+    for item in sorted_items:
+        task_id = item.get('id')
+        if task_id in processed_tasks:
+            continue
+        
+        processed_tasks.add(task_id)
+        
+        section_id = item.get('section_id')
+        if section_id in SECTION_TO_LABEL_MAPPING:
+            await process_task(item)
+        else:
+            logging.info(f"Skipping task {task_id} as it's not in a monitored section")
 
 async def sync_and_process():
     global sync_token, last_sync_time
@@ -192,6 +186,11 @@ async def sync_and_process():
         logging.info(f"Sync completed. Processed {len(sync_data.get('items', []))} items.")
     except requests.exceptions.RequestException as e:
         logging.error(f"Sync failed: {str(e)}")
+
+@app.post("/todoist/")
+async def todoist_webhook(webhook: TodoistWebhook, background_tasks: BackgroundTasks):
+    background_tasks.add_task(sync_and_process)
+    return {"status": "Processing started"}
 
 if __name__ == "__main__":
     import uvicorn
