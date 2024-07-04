@@ -1,4 +1,5 @@
 import os
+import asyncio
 from dotenv import load_dotenv
 import logging
 from datetime import datetime, timedelta
@@ -155,9 +156,9 @@ async def process_task(task: Dict[str, Any]):
         elif section_name and section_name.startswith("Inbox *"):
             await remove_due_date(task_id)
 
-def process_changes(changes: Dict[str, Any]):
+async def process_changes(changes: Dict[str, Any]):
     for item in changes.get("items", []):
-        process_task(item)
+        await process_task(item)
 
 @app.post("/todoist/")
 async def todoist_webhook(webhook: TodoistWebhook, background_tasks: BackgroundTasks):
@@ -185,9 +186,10 @@ async def sync_and_process():
         response = requests.post(TODOIST_SYNC_URL, headers=headers, json=data)
         response.raise_for_status()
         sync_data = response.json()
-        process_changes(sync_data)
+        await process_changes(sync_data)
         sync_token = sync_data["sync_token"]
         last_sync_time = current_time
+        logging.info(f"Sync completed. Processed {len(sync_data.get('items', []))} items.")
     except requests.exceptions.RequestException as e:
         logging.error(f"Sync failed: {str(e)}")
 
