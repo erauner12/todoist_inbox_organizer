@@ -12,6 +12,15 @@ import requests
 import uuid
 import json
 
+
+import time
+
+# Add these at the top of your file with other imports
+
+# Global variable to track rate limit status
+rate_limited = False
+rate_limit_reset_time = 0
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -63,6 +72,21 @@ class Webhook(BaseModel):
     event_data: Task
 
 
+async def handle_rate_limit(reset_time):
+    global rate_limited, rate_limit_reset_time
+    rate_limited = True
+    rate_limit_reset_time = reset_time
+    logging.warning(f"Rate limit reached. Pausing requests until {time.ctime(reset_time)}")
+
+async def check_rate_limit():
+    global rate_limited, rate_limit_reset_time
+    if rate_limited:
+        if time.time() < rate_limit_reset_time:
+            raise HTTPException(status_code=429, detail="Rate limit reached. Try again later.")
+        else:
+            rate_limited = False
+            rate_limit_reset_time = 0
+
 async def remove_due_date(task_id):
     url = 'https://api.todoist.com/sync/v9/sync'
     headers = {
@@ -91,9 +115,17 @@ async def remove_due_date(task_id):
         logging.error(f"Failed to remove due date from task {task_id}. Error: {str(e)}")
         return False
 
+# Modify your existing functions to use these new helpers
 async def get_section_name(section_id):
-    section = await todoist_api.get_section(section_id)
-    return section.name if section else None
+    try:
+        await check_rate_limit()
+        section = await todoist_api.get_section(section_id)
+        return section.name if section else None
+    except HTTPError as e:
+        if e.status_code == 429:
+            await handle_rate_limit(int(e.headers.get('X-Rate-Limit-Reset', time.time() + 60)))
+            raise HTTPException(status_code=429, detail="Rate limit reached. Try again later.")
+        raise
 
 async def get_or_create_inbox_section(project_id):
     try:
@@ -111,6 +143,7 @@ async def get_or_create_inbox_section(project_id):
 
 async def add_label_to_task(task_id, label):
     try:
+        await check_rate_limit()
         task = await todoist_api.get_task(task_id)
         if label not in task.labels:
             labels = task.labels + [label]
@@ -124,9 +157,11 @@ async def add_label_to_task(task_id, label):
         else:
             logging.info(f"Label {label} already exists on task {task_id}. No action taken.")
             return True
-    except Exception as e:
-        logging.error(f"Failed to add label {label} to task {task_id}. Error: {str(e)}")
-        return False
+    except HTTPError as e:
+        if e.status_code == 429:
+            await handle_rate_limit(int(e.headers.get('X-Rate-Limit-Reset', time.time() + 60)))
+            raise HTTPException(status_code=429, detail="Rate limit reached. Try again later.")
+        raise
     
 async def move_task_to_project_inbox(task_id, project_id):
     try:
@@ -315,18 +350,16 @@ async def process_move_section(task_id, move_type):
 
 processed_tasks = {}
 
+
+# Modify your webhook handler
 @app.post("/todoist/")
-async def todoist_webhook(
-    webhook: Webhook,
-    background_tasks: BackgroundTasks,
-):
+async def todoist_webhook(webhook: Webhook, background_tasks: BackgroundTasks):
     if webhook.event_name in ["item:added", "item:updated"]:
         task_id = webhook.event_data.id
         project_id = webhook.event_data.project_id
         section_id = webhook.event_data.section_id
         content = webhook.event_data.content
 
-        # Check if the task has been processed recently
         if task_id in processed_tasks:
             last_processed_time = processed_tasks[task_id]
             if datetime.now() - last_processed_time < timedelta(seconds=5):
@@ -336,9 +369,15 @@ async def todoist_webhook(
         logging.info(f"Task {task_id} {webhook.event_name.split(':')[1]} in project {project_id}, section {section_id}")
         
         if section_id:
-            background_tasks.add_task(process_task, task_id, project_id, section_id, content)
+            try:
+                await check_rate_limit()
+                background_tasks.add_task(process_task, task_id, project_id, section_id, content)
+            except HTTPException as e:
+                if e.status_code == 429:
+                    logging.warning("Rate limit reached. Skipping task processing.")
+                    return "rate limited"
+                raise
 
-        # Update the processed tasks dictionary
         processed_tasks[task_id] = datetime.now()
 
     return "ok"
