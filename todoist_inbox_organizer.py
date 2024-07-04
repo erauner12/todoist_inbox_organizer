@@ -112,14 +112,18 @@ async def get_or_create_inbox_section(project_id):
 async def add_label_to_task(task_id, label):
     try:
         task = await todoist_api.get_task(task_id)
-        labels = task.labels + [label] if task.labels else [label]
-        updated_task = todoist_sync_api.update_task(task_id=task_id, labels=labels)
-        if updated_task:
-            logging.info(f"Added label {label} to task {task_id}")
-            return True
+        if label not in task.labels:
+            labels = task.labels + [label]
+            updated_task = todoist_sync_api.update_task(task_id=task_id, labels=labels)
+            if updated_task:
+                logging.info(f"Added label {label} to task {task_id}")
+                return True
+            else:
+                logging.error(f"Failed to add label {label} to task {task_id}")
+                return False
         else:
-            logging.error(f"Failed to add label {label} to task {task_id}")
-            return False
+            logging.info(f"Label {label} already exists on task {task_id}. No action taken.")
+            return True
     except Exception as e:
         logging.error(f"Failed to add label {label} to task {task_id}. Error: {str(e)}")
         return False
