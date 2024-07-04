@@ -8,6 +8,7 @@ from pydantic import BaseModel
 import requests
 import json
 import time
+from todoist_api_python.api import TodoistAPI
 
 # Load environment variables
 load_dotenv()
@@ -23,9 +24,11 @@ logging.basicConfig(level=logging.DEBUG if DEBUG else logging.INFO, format=loggi
 # FastAPI app setup
 app = FastAPI(debug=DEBUG)
 
+# Todoist API setup
+todoist_api = TodoistAPI(TODOIST_API_KEY)
+
 # Todoist API constants
 TODOIST_SYNC_URL = "https://api.todoist.com/sync/v9/sync"
-TODOIST_REST_API_URL = "https://api.todoist.com/rest/v2"
 
 # Mappings and configurations
 INBOX_PROJECT_ID = "2236493795"
@@ -57,57 +60,67 @@ class TodoistWebhook(BaseModel):
     user_id: str
     event_data: Dict[str, Any]
 
-def todoist_api_request(method: str, endpoint: str, data: Dict[str, Any] = None) -> Dict[str, Any]:
-    headers = {
-        "Authorization": f"Bearer {TODOIST_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    url = f"{TODOIST_REST_API_URL}/{endpoint}"
-    response = requests.request(method, url, headers=headers, json=data)
-    response.raise_for_status()
-    return response.json()
-
 async def get_section_name(section_id: str) -> str:
-    section = todoist_api_request("GET", f"sections/{section_id}")
-    return section.get("name")
+    try:
+        section = todoist_api.get_section(section_id)
+        return section.name
+    except Exception as e:
+        logging.error(f"Error getting section name: {str(e)}")
+        return None
 
 async def add_label_to_task(task_id: str, label: str) -> bool:
-    task = todoist_api_request("GET", f"tasks/{task_id}")
-    if label not in task.get("labels", []):
-        labels = task.get("labels", []) + [label]
-        updated_task = todoist_api_request("POST", f"tasks/{task_id}", {"labels": labels})
-        if updated_task:
-            logging.info(f"Added label {label} to task {task_id}")
-            return True
-    return False
+    try:
+        task = todoist_api.get_task(task_id)
+        if label not in task.labels:
+            labels = task.labels + [label]
+            updated_task = todoist_api.update_task(task_id=task_id, labels=labels)
+            if updated_task:
+                logging.info(f"Added label {label} to task {task_id}")
+                return True
+        return False
+    except Exception as e:
+        logging.error(f"Error adding label to task: {str(e)}")
+        return False
 
 async def set_due_date(task_id: str, due_string: str, due_lang: str = "en", add_duration: bool = False) -> bool:
-    data = {
-        "due_string": due_string,
-        "due_lang": due_lang,
-    }
-    if add_duration:
-        data["duration"] = {"amount": 60, "unit": "minute"}
-    
-    updated_task = todoist_api_request("POST", f"tasks/{task_id}", data)
-    if updated_task:
-        logging.info(f"Set due date to '{due_string}' for task {task_id}")
-        return True
-    return False
+    try:
+        data = {
+            "due_string": due_string,
+            "due_lang": due_lang,
+        }
+        if add_duration:
+            data["duration"] = {"amount": 60, "unit": "minute"}
+        
+        updated_task = todoist_api.update_task(task_id=task_id, **data)
+        if updated_task:
+            logging.info(f"Set due date to '{due_string}' for task {task_id}")
+            return True
+        return False
+    except Exception as e:
+        logging.error(f"Error setting due date: {str(e)}")
+        return False
 
 async def remove_due_date(task_id: str) -> bool:
-    updated_task = todoist_api_request("POST", f"tasks/{task_id}", {"due_string": None})
-    if updated_task:
-        logging.info(f"Removed due date from task {task_id}")
-        return True
-    return False
+    try:
+        updated_task = todoist_api.update_task(task_id=task_id, due_string=None)
+        if updated_task:
+            logging.info(f"Removed due date from task {task_id}")
+            return True
+        return False
+    except Exception as e:
+        logging.error(f"Error removing due date: {str(e)}")
+        return False
 
 async def move_task_to_project(task_id: str, project_id: str) -> bool:
-    updated_task = todoist_api_request("POST", f"tasks/{task_id}", {"project_id": project_id})
-    if updated_task:
-        logging.info(f"Moved task {task_id} to project {project_id}")
-        return True
-    return False
+    try:
+        updated_task = todoist_api.update_task(task_id=task_id, project_id=project_id)
+        if updated_task:
+            logging.info(f"Moved task {task_id} to project {project_id}")
+            return True
+        return False
+    except Exception as e:
+        logging.error(f"Error moving task to project: {str(e)}")
+        return False
 
 async def process_task(task: Dict[str, Any]):
     task_id = task["id"]
@@ -139,14 +152,14 @@ async def process_task(task: Dict[str, Any]):
             due_info = DUE_TIME_SECTIONS[section_name]
             await set_due_date(task_id, due_info["due_string"], due_info["due_lang"], add_duration=True)
         
-        elif section_name.startswith("Inbox *"):
+        elif section_name and section_name.startswith("Inbox *"):
             await remove_due_date(task_id)
 
 def process_changes(changes: Dict[str, Any]):
     for item in changes.get("items", []):
         process_task(item)
 
-@app.post("/todoist_webhook")
+@app.post("/todoist/")
 async def todoist_webhook(webhook: TodoistWebhook, background_tasks: BackgroundTasks):
     background_tasks.add_task(sync_and_process)
     return {"status": "Processing started"}
@@ -168,14 +181,15 @@ async def sync_and_process():
         "resource_types": '["items"]'
     }
     
-    response = requests.post(TODOIST_SYNC_URL, headers=headers, json=data)
-    if response.status_code == 200:
+    try:
+        response = requests.post(TODOIST_SYNC_URL, headers=headers, json=data)
+        response.raise_for_status()
         sync_data = response.json()
         process_changes(sync_data)
         sync_token = sync_data["sync_token"]
         last_sync_time = current_time
-    else:
-        logging.error(f"Sync failed with status code: {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Sync failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
