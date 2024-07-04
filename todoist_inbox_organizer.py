@@ -11,15 +11,8 @@ from todoist_api_python.api_async import TodoistAPIAsync
 import requests
 import uuid
 import json
-
-
 import time
-
-# Add these at the top of your file with other imports
-
-# Global variable to track rate limit status
-rate_limited = False
-rate_limit_reset_time = 0
+from collections import defaultdict
 
 # Load environment variables from .env file
 load_dotenv()
@@ -45,7 +38,7 @@ SECTION_TO_LABEL_MAPPING = {
     "Side": "context/side",
     "Move to Immediate": "move/immediate",
     "Move to Parallel": "move/parallel",
-    "Move to project Inbox": "move/inbox",  # Add this new mapping
+    "Move to project Inbox": "move/inbox",
 }
 
 LABEL_TO_PROJECT_MAPPING = {
@@ -71,6 +64,15 @@ class Webhook(BaseModel):
     user_id: str
     event_data: Task
 
+# Global variables for rate limiting
+rate_limited = False
+rate_limit_reset_time = 0
+
+# Use a defaultdict to track processed tasks with their timestamps
+processed_tasks = defaultdict(lambda: {'timestamp': 0, 'count': 0})
+
+# Increase the deduplication window to 30 seconds
+DEDUPLICATION_WINDOW = 30
 
 async def handle_rate_limit(reset_time):
     global rate_limited, rate_limit_reset_time
@@ -115,7 +117,6 @@ async def remove_due_date(task_id):
         logging.error(f"Failed to remove due date from task {task_id}. Error: {str(e)}")
         return False
 
-# Modify your existing functions to use these new helpers
 async def get_section_name(section_id):
     try:
         await check_rate_limit()
@@ -129,6 +130,7 @@ async def get_section_name(section_id):
 
 async def get_or_create_inbox_section(project_id):
     try:
+        await check_rate_limit()
         sections = await todoist_api.get_sections(project_id=project_id)
         for section in sections:
             if section.name.startswith("Inbox *"):
@@ -137,7 +139,10 @@ async def get_or_create_inbox_section(project_id):
         # If no Inbox section exists, create one
         new_section = await todoist_api.add_section(name="Inbox *", project_id=project_id)
         return new_section.id
-    except Exception as e:
+    except HTTPError as e:
+        if e.status_code == 429:
+            await handle_rate_limit(int(e.headers.get('X-Rate-Limit-Reset', time.time() + 60)))
+            raise HTTPException(status_code=429, detail="Rate limit reached. Try again later.")
         logging.error(f"Failed to get or create Inbox section for project {project_id}. Error: {str(e)}")
         return None
 
@@ -165,6 +170,7 @@ async def add_label_to_task(task_id, label):
     
 async def move_task_to_project_inbox(task_id, project_id):
     try:
+        await check_rate_limit()
         inbox_section_id = await get_or_create_inbox_section(project_id)
         if not inbox_section_id:
             logging.error(f"Failed to get or create Inbox section for project {project_id}")
@@ -201,8 +207,8 @@ async def move_task_to_project_inbox(task_id, project_id):
 
 async def set_due_date(task_id, due_string, due_lang="en", add_duration=False):
     try:
+        await check_rate_limit()
         logging.debug(f"Setting due date for task {task_id} with due_string: {due_string}")
-
         
         update_args = {
             "task_id": task_id,
@@ -226,53 +232,31 @@ async def set_due_date(task_id, due_string, due_lang="en", add_duration=False):
         else:
             logging.error(f"Failed to set due date for task {task_id}")
             return False
-    except Exception as e:
+    except HTTPError as e:
+        if e.status_code == 429:
+            await handle_rate_limit(int(e.headers.get('X-Rate-Limit-Reset', time.time() + 60)))
+            raise HTTPException(status_code=429, detail="Rate limit reached. Try again later.")
         logging.error(f"Failed to set due date for task {task_id}. Error: {str(e)}")
         return False
 
-async def process_task(task_id, project_id, section_id, content):
-    section_name = await get_section_name(section_id)
-    task = await todoist_api.get_task(task_id)
-
-    if section_name == "Due Today" and task.due and task.due.date != datetime.now().strftime("%Y-%m-%d"):
-        await set_due_date(task_id, "today")
-        logging.info(f"Processed task {task_id}. Set due date to today")
-    elif section_name in DUE_TIME_SECTIONS and (not task.due or task.due.string != DUE_TIME_SECTIONS[section_name]["due_string"]):
-        due_info = DUE_TIME_SECTIONS[section_name]
-        await set_due_date(task_id, due_info["due_string"], due_info["due_lang"], add_duration=True)
-        logging.info(f"Processed task {task_id}. Set due date to {due_info['due_string']} with 1 hour duration")
-    elif section_name and section_name in SECTION_TO_LABEL_MAPPING:
-        label = SECTION_TO_LABEL_MAPPING[section_name]
-        if label.startswith("move/"):
-            await process_move_section(task_id, label)
-        elif label not in task.labels:
-            await add_label_to_task(task_id, label)
-            logging.info(f"Processed task {task_id}. Added label {label}")
-        else:
-            logging.info(f"Task {task_id} already has label {label}. No action taken.")
-    elif section_name and section_name.startswith("Inbox *") and task.due:
-        success = await remove_due_date(task_id)
-        if success:
-            logging.info(f"Processed task {task_id}. Removed due date as it was moved to Inbox section")
-        else:
-            logging.error(f"Failed to remove due date from task {task_id}")
-    else:
-        logging.info(f"Skipped task {task_id} as it has no matching section or no changes needed.")
-
-
 async def get_section_id(project_id, section_prefix):
     try:
+        await check_rate_limit()
         sections = await todoist_api.get_sections(project_id=project_id)
         for section in sections:
             if section.name.startswith(section_prefix):
                 return section.id
         return None
-    except Exception as e:
+    except HTTPError as e:
+        if e.status_code == 429:
+            await handle_rate_limit(int(e.headers.get('X-Rate-Limit-Reset', time.time() + 60)))
+            raise HTTPException(status_code=429, detail="Rate limit reached. Try again later.")
         logging.error(f"Failed to get section for project {project_id}. Error: {str(e)}")
         return None
 
 async def move_task_to_project_and_section(task_id, project_id, section_prefix):
     try:
+        await check_rate_limit()
         # Step 1: Move task to the project
         move_to_project_command = {
             "type": "item_move",
@@ -324,34 +308,73 @@ async def move_task_to_project_and_section(task_id, project_id, section_prefix):
         logging.error(f"Failed to move task {task_id}. Error: {str(e)}")
         return False
 
-
 async def process_move_section(task_id, move_type):
-    task = await todoist_api.get_task(task_id)
-    if task and task.labels:
-        for label in task.labels:
-            if label in LABEL_TO_PROJECT_MAPPING:
-                target_project_id = LABEL_TO_PROJECT_MAPPING[label]
-                if move_type == "move/immediate":
-                    success = await move_task_to_project_and_section(task_id, target_project_id, "Immediate--")
-                elif move_type == "move/parallel":
-                    success = await move_task_to_project_and_section(task_id, target_project_id, "Parallel=-")
-                elif move_type == "move/inbox":
-                    success = await move_task_to_project_inbox(task_id, target_project_id)
-                else:
-                    logging.error(f"Unknown move type: {move_type}")
-                    return
+    try:
+        await check_rate_limit()
+        task = await todoist_api.get_task(task_id)
+        if task and task.labels:
+            for label in task.labels:
+                if label in LABEL_TO_PROJECT_MAPPING:
+                    target_project_id = LABEL_TO_PROJECT_MAPPING[label]
+                    if move_type == "move/immediate":
+                        success = await move_task_to_project_and_section(task_id, target_project_id, "Immediate--")
+                    elif move_type == "move/parallel":
+                        success = await move_task_to_project_and_section(task_id, target_project_id, "Parallel=-")
+                    elif move_type == "move/inbox":
+                        success = await move_task_to_project_inbox(task_id, target_project_id)
+                    else:
+                        logging.error(f"Unknown move type: {move_type}")
+                        return
 
-                if success:
-                    logging.info(f"Moved task {task_id} to project {target_project_id} based on label {label}")
-                    return
-                else:
-                    logging.error(f"Failed to move task {task_id} to project {target_project_id}")
-    logging.info(f"Task {task_id} has no matching label for moving.")
+                    if success:
+                        logging.info(f"Moved task {task_id} to project {target_project_id} based on label {label}")
+                        return
+                    else:
+                        logging.error(f"Failed to move task {task_id} to project {target_project_id}")
+        logging.info(f"Task {task_id} has no matching label for moving.")
+    except HTTPError as e:
+        if e.status_code == 429:
+            await handle_rate_limit(int(e.headers.get('X-Rate-Limit-Reset', time.time() + 60)))
+            raise HTTPException(status_code=429, detail="Rate limit reached. Try again later.")
+        raise
 
-processed_tasks = {}
 
+async def process_task(task_id, project_id, section_id, content):
+    try:
+        await check_rate_limit()
+        section_name = await get_section_name(section_id)
+        task = await todoist_api.get_task(task_id)
 
-# Modify your webhook handler
+        if section_name in SECTION_TO_LABEL_MAPPING:
+            label = SECTION_TO_LABEL_MAPPING[section_name]
+            if label.startswith("move/"):
+                await process_move_section(task_id, label)
+            elif label not in task.labels:
+                await add_label_to_task(task_id, label)
+                logging.info(f"Processed task {task_id}. Added label {label}")
+            else:
+                logging.info(f"Task {task_id} already has label {label}. No action taken.")
+        elif section_name == "Due Today" and (not task.due or task.due.date != datetime.now().strftime("%Y-%m-%d")):
+            await set_due_date(task_id, "today")
+            logging.info(f"Processed task {task_id}. Set due date to today")
+        elif section_name in DUE_TIME_SECTIONS and (not task.due or task.due.string != DUE_TIME_SECTIONS[section_name]["due_string"]):
+            due_info = DUE_TIME_SECTIONS[section_name]
+            await set_due_date(task_id, due_info["due_string"], due_info["due_lang"], add_duration=True)
+            logging.info(f"Processed task {task_id}. Set due date to {due_info['due_string']} with 1 hour duration")
+        elif section_name and section_name.startswith("Inbox *") and task.due:
+            success = await remove_due_date(task_id)
+            if success:
+                logging.info(f"Processed task {task_id}. Removed due date as it was moved to Inbox section")
+            else:
+                logging.error(f"Failed to remove due date from task {task_id}")
+        else:
+            logging.info(f"Skipped task {task_id} as it has no matching section or no changes needed.")
+    except HTTPError as e:
+        if e.status_code == 429:
+            await handle_rate_limit(int(e.headers.get('X-Rate-Limit-Reset', time.time() + 60)))
+            raise HTTPException(status_code=429, detail="Rate limit reached. Try again later.")
+        raise
+
 @app.post("/todoist/")
 async def todoist_webhook(webhook: Webhook, background_tasks: BackgroundTasks):
     if webhook.event_name in ["item:added", "item:updated"]:
@@ -360,11 +383,17 @@ async def todoist_webhook(webhook: Webhook, background_tasks: BackgroundTasks):
         section_id = webhook.event_data.section_id
         content = webhook.event_data.content
 
-        if task_id in processed_tasks:
-            last_processed_time = processed_tasks[task_id]
-            if datetime.now() - last_processed_time < timedelta(seconds=5):
-                logging.info(f"Skipping task {task_id} as it was processed recently.")
+        current_time = time.time()
+        task_info = processed_tasks[task_id]
+
+        if current_time - task_info['timestamp'] < DEDUPLICATION_WINDOW:
+            task_info['count'] += 1
+            if task_info['count'] > 1:
+                logging.info(f"Skipping task {task_id} as it was processed recently (count: {task_info['count']}).")
                 return "ok"
+        else:
+            task_info['timestamp'] = current_time
+            task_info['count'] = 1
 
         logging.info(f"Task {task_id} {webhook.event_name.split(':')[1]} in project {project_id}, section {section_id}")
         
@@ -377,8 +406,6 @@ async def todoist_webhook(webhook: Webhook, background_tasks: BackgroundTasks):
                     logging.warning("Rate limit reached. Skipping task processing.")
                     return "rate limited"
                 raise
-
-        processed_tasks[task_id] = datetime.now()
 
     return "ok"
 
