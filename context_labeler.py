@@ -7,7 +7,7 @@ from fastapi import FastAPI, BackgroundTasks, Depends
 from pydantic import BaseModel
 from starlette.requests import Request
 from synctodoist import TodoistAPI
-from synctodoist.models import Task, Due, Project
+from synctodoist.models import Task, Due, Project, Section
 
 # Load environment variables from .env file
 load_dotenv()
@@ -93,6 +93,18 @@ async def set_due_date(api: TodoistAPI, task_id: str, due_string: str, due_lang:
         logging.error(f"Failed to set due date for task {task_id}. Error: {str(e)}")
         return False
 
+async def remove_due_date(api: TodoistAPI, task_id: str) -> bool:
+    try:
+        task = api.get_task(task_id=task_id)
+        task.due = None
+        api.update_task(task_id=task.id, task=task)
+        api.commit()
+        logging.info(f"Successfully removed due date from task {task_id}")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to remove due date from task {task_id}. Error: {str(e)}")
+        return False
+
 async def move_task_to_project(api: TodoistAPI, task_id: str, project_id: str) -> bool:
     try:
         task = api.get_task(task_id=task_id)
@@ -107,32 +119,102 @@ async def move_task_to_project(api: TodoistAPI, task_id: str, project_id: str) -
         logging.error(f"Failed to move task {task_id} to project {project_id}. Error: {str(e)}")
         return False
 
-async def process_task(api: TodoistAPI, task_id: str, project_id: str, section_id: str, content: str):
-    section_name = await get_section_name(api, section_id)
+async def process_task(api: TodoistAPI, task: Task):
+    # Check for "later" label
+    if "later" in task.labels:
+        # Move to "Later" section in the same project
+        success = await move_task_to_project_and_section(api, task.id, task.project_id, "Later")
+        if success:
+            # Remove due date
+            task.due = None
+            
+            # Remove "later" label
+            task.labels = [label for label in task.labels if label != "later"]
+            
+            api.update_task(task_id=task.id, task=task)
+            api.commit()
+            logging.info(f"Moved task {task.id} to Later section, removed due date, and removed 'later' label")
+        return  # Exit function after processing "later" label
     
-    # Add context label
-    if section_name in SECTION_TO_LABEL_MAPPING:
-        label = SECTION_TO_LABEL_MAPPING[section_name]
-        await add_label_to_task(api, task_id, label)
-        logging.info(f"Processed task {task_id}. Added label {label}")
+    # Process specific sections
+    if task.section_id:
+        section_name = await get_section_name(api, task.section_id)
+        
+        # Add context label
+        if section_name in SECTION_TO_LABEL_MAPPING:
+            label = SECTION_TO_LABEL_MAPPING[section_name]
+            await add_label_to_task(api, task.id, label)
+            logging.info(f"Processed task {task.id}. Added label {label}")
+        
+        # Set due date and duration
+        if section_name == "Due Today":
+            await set_due_date(api, task.id, "today")
+            logging.info(f"Processed task {task.id}. Set due date to today")
+        elif section_name in DUE_TIME_SECTIONS:
+            due_info = DUE_TIME_SECTIONS[section_name]
+            await set_due_date(api, task.id, due_info["due_string"], due_info["due_lang"], add_duration=True)
+            logging.info(f"Processed task {task.id}. Set due date to {due_info['due_string']} with 1 hour duration")
+
+    logging.info(f"Finished processing task {task.id}")
     
-    # Set due date and duration
-    if section_name == "Due Today":
-        await set_due_date(api, task_id, "today")
-        logging.info(f"Processed task {task_id}. Set due date to today")
-    elif section_name in DUE_TIME_SECTIONS:
-        due_info = DUE_TIME_SECTIONS[section_name]
-        await set_due_date(api, task_id, due_info["due_string"], due_info["due_lang"], add_duration=True)
-        logging.info(f"Processed task {task_id}. Set due date to {due_info['due_string']} with 1 hour duration")
-    
-    # Move task to project based on label
-    task = api.get_task(task_id=task_id)
-    if task.labels:
-        for label in task.labels:
-            if label in LABEL_TO_PROJECT_MAPPING:
-                target_project_id = LABEL_TO_PROJECT_MAPPING[label]
-                await move_task_to_project(api, task_id, target_project_id)
-                break
+async def process_context_label(api: TodoistAPI, task: Task):
+    for label in task.labels:
+        if label in LABEL_TO_PROJECT_MAPPING:
+            target_project_id = LABEL_TO_PROJECT_MAPPING[label]
+            await move_task_to_project_and_section(api, task.id, target_project_id, "Inbox")
+            logging.info(f"Moved task {task.id} to project {target_project_id} based on label {label}")
+            break
+        
+async def move_task_to_project_and_section(api: TodoistAPI, task_id: str, project_id: str, section_name: str) -> bool:
+    try:
+        task = api.get_task(task_id=task_id)
+        project = api.get_project(project_id=project_id)
+        section = await get_or_create_section(api, project_id, section_name)
+        
+        if section:
+            api.move_task(task=task, project=project, section=section)
+            api.commit()
+            
+            logging.info(f"Moved task {task_id} to project {project_id}, section {section_name}")
+            return True
+        else:
+            logging.error(f"Failed to move task {task_id}: couldn't find or create section {section_name}")
+            return False
+    except Exception as e:
+        logging.error(f"Failed to move task {task_id} to project {project_id}, section {section_name}. Error: {str(e)}")
+        return False
+
+async def get_or_create_section(api: TodoistAPI, project_id: str, section_name: str) -> Optional[Section]:
+    try:
+        sections = api.sections.find(f"^{section_name}$", field="name", return_all=True)
+        for section in sections:
+            if section.project_id == project_id:
+                return section
+        
+        # If no section exists, create one
+        new_section = Section(name=section_name, project_id=project_id)
+        api.add_section(new_section)
+        api.commit()
+        return new_section
+    except Exception as e:
+        logging.error(f"Failed to get or create {section_name} section for project {project_id}. Error: {str(e)}")
+        return None
+
+async def get_or_create_section(api: TodoistAPI, project_id: str, section_name: str) -> Optional[Section]:
+    try:
+        sections = api.sections.find(f"^{section_name}$", field="name", return_all=True)
+        for section in sections:
+            if section.project_id == project_id:
+                return section
+        
+        # If no section exists, create one
+        new_section = Section(name=section_name, project_id=project_id)
+        api.add_section(new_section)
+        api.commit()
+        return new_section
+    except Exception as e:
+        logging.error(f"Failed to get or create {section_name} section for project {project_id}. Error: {str(e)}")
+        return None
 
 processed_tasks = {}
 
@@ -140,9 +222,13 @@ processed_tasks = {}
 async def todoist_webhook(webhook: Webhook, background_tasks: BackgroundTasks, api: TodoistAPI = Depends(get_todoist_api)):
     if webhook.event_name in ["item:added", "item:updated"]:
         task_id = webhook.event_data.id
-        project_id = webhook.event_data.project_id
-        section_id = webhook.event_data.section_id
-        content = webhook.event_data.content
+        
+        # Fetch the latest task information
+        try:
+            task = api.get_task(task_id=task_id)
+        except Exception as e:
+            logging.error(f"Failed to fetch task {task_id}. Error: {str(e)}")
+            return "ok"
 
         if task_id in processed_tasks:
             last_processed_time = processed_tasks[task_id]
@@ -150,10 +236,9 @@ async def todoist_webhook(webhook: Webhook, background_tasks: BackgroundTasks, a
                 logging.info(f"Skipping task {task_id} as it was processed recently.")
                 return "ok"
 
-        logging.info(f"Task {task_id} {webhook.event_name.split(':')[1]} in project {project_id}, section {section_id}")
+        logging.info(f"Task {task_id} {webhook.event_name.split(':')[1]} in project {task.project_id}, section {task.section_id}")
         
-        if section_id:
-            background_tasks.add_task(process_task, api, task_id, project_id, section_id, content)
+        background_tasks.add_task(process_task, api, task)
 
         processed_tasks[task_id] = datetime.now()
 
