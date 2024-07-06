@@ -123,7 +123,7 @@ async def process_task(api: TodoistAPI, task: Task):
     # Check for "later" label
     if "later" in task.labels:
         # Move to "Later" section in the same project
-        success = await move_task_to_project_and_section(api, task.id, task.project_id, "Later")
+        success = await move_task_to_section(api, task.id, task.project_id, "Later")
         if success:
             # Remove due date
             task.due = None
@@ -165,23 +165,22 @@ async def process_context_label(api: TodoistAPI, task: Task):
             logging.info(f"Moved task {task.id} to project {target_project_id} based on label {label}")
             break
         
-async def move_task_to_project_and_section(api: TodoistAPI, task_id: str, project_id: str, section_name: str) -> bool:
+async def move_task_to_section(api: TodoistAPI, task_id: str, project_id: str, section_name: str) -> bool:
     try:
         task = api.get_task(task_id=task_id)
-        project = api.get_project(project_id=project_id)
         section = await get_or_create_section(api, project_id, section_name)
         
         if section:
-            api.move_task(task=task, project=project, section=section)
+            api.move_task(task=task, section=section.id)
             api.commit()
             
-            logging.info(f"Moved task {task_id} to project {project_id}, section {section_name}")
+            logging.info(f"Moved task {task_id} to section {section_name} in project {project_id}")
             return True
         else:
             logging.error(f"Failed to move task {task_id}: couldn't find or create section {section_name}")
             return False
     except Exception as e:
-        logging.error(f"Failed to move task {task_id} to project {project_id}, section {section_name}. Error: {str(e)}")
+        logging.error(f"Failed to move task {task_id} to section {section_name} in project {project_id}. Error: {str(e)}")
         return False
 
 async def get_or_create_section(api: TodoistAPI, project_id: str, section_name: str) -> Optional[Section]:
