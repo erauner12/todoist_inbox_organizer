@@ -147,3 +147,4 @@ dmypy.json
 # Docker
 Dockerfile
 docker-compose.yml
+.DS_Store
