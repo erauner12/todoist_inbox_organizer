@@ -7,7 +7,9 @@ from fastapi import FastAPI, BackgroundTasks, Depends
 from pydantic import BaseModel
 from starlette.requests import Request
 from synctodoist import TodoistAPI
-from synctodoist.models import Task, Due, Project, Section
+from synctodoist.models import Task, Due, Project, Section, Reminder
+
+from dateutil import relativedelta
 
 # Load environment variables from .env file
 load_dotenv()
@@ -61,13 +63,24 @@ def get_todoist_api():
     api.sync()
     return api
 
-async def set_reminder(api: TodoistAPI, task_id: str, remind_time: str) -> bool:
+async def set_reminder(api: TodoistAPI, task_id: str) -> bool:
     try:
-        reminder = Reminder(item_id=task_id, type="relative", minute_offset=0, string=remind_time)
-        api.add_reminder(reminder)
-        api.commit()
-        logging.info(f"Added reminder '{remind_time}' to task {task_id}")
-        return True
+        task = api.get_task(task_id=task_id)
+        if task.due:
+            reminder = Reminder(
+                item_id=task_id,
+                type="relative",
+                minute_offset=0,
+                due=task.due
+            )
+            api.add_reminder(reminder)
+            api.commit()
+            logging.info(f"Added reminder at due time for task {task_id}")
+            return True
+        else:
+            # If the task doesn't have a due date, we can't set a relative reminder
+            logging.error(f"Can't set reminder for task {task_id} as it has no due date")
+            return False
     except Exception as e:
         logging.error(f"Failed to add reminder to task {task_id}. Error: {str(e)}")
         return False
@@ -89,6 +102,8 @@ async def add_label_to_task(api: TodoistAPI, task_id: str, label: str) -> bool:
         logging.error(f"Failed to add label {label} to task {task_id}. Error: {str(e)}")
         return False
 
+
+
 async def set_due_date(api: TodoistAPI, task_id: str, due_string: str, due_lang: str = "en", add_duration: bool = False) -> bool:
     try:
         logging.debug(f"Setting due date for task {task_id} with due_string: {due_string}")
@@ -97,9 +112,25 @@ async def set_due_date(api: TodoistAPI, task_id: str, due_string: str, due_lang:
         
         if due_string.startswith("+"):
             # Handle relative time
-            hours = int(due_string.split()[1])
-            due_date = datetime.now() + timedelta(hours=hours)
-            task.due = Due(date=due_date.strftime("%Y-%m-%d"), datetime=due_date.strftime("%Y-%m-%dT%H:%M:%S"))
+            parts = due_string[1:].split()
+            if len(parts) == 2:
+                amount = int(parts[0])
+                unit = parts[1].lower()
+                now = datetime.now()
+                if unit in ['hour', 'hours']:
+                    due_date = now + timedelta(hours=amount)
+                elif unit in ['day', 'days']:
+                    due_date = now + timedelta(days=amount)
+                elif unit in ['week', 'weeks']:
+                    due_date = now + timedelta(weeks=amount)
+                elif unit in ['month', 'months']:
+                    due_date = now + relativedelta(months=amount)
+                else:
+                    raise ValueError(f"Unsupported time unit: {unit}")
+                
+                task.due = Due(date=due_date.strftime("%Y-%m-%d"), datetime=due_date.strftime("%Y-%m-%dT%H:%M:%S"))
+            else:
+                raise ValueError(f"Invalid relative time format: {due_string}")
         else:
             task.due = Due(string=due_string, lang=due_lang)
         
@@ -162,7 +193,7 @@ async def process_task(api: TodoistAPI, task: Task):
             logging.info(f"Processed task {task.id}. Set due date to {due_info['due_string']}")
             
             if due_info.get("add_reminder", False):
-                await set_reminder(api, task.id, "at time of due date")
+                await set_reminder(api, task.id)
                 logging.info(f"Added reminder to task {task.id}")
         elif section_name == "Due Today":
             await set_due_date(api, task.id, "today")
