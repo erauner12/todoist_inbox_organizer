@@ -8,3 +8,4 @@ trio
 todoist-python
 synctodoist==0.3.4 --extra-index-url https://pypi.erauner.synology.me/simple
 python-dateutil
+pytz

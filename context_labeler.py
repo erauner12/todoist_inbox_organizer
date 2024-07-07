@@ -9,7 +9,12 @@ from starlette.requests import Request
 from synctodoist import TodoistAPI
 from synctodoist.models import Task, Due, Project, Section, Reminder
 
+from datetime import datetime, timedelta
 from dateutil import relativedelta
+import pytz
+
+# Define the user's timezone (CST for Oklahoma)
+USER_TIMEZONE = pytz.timezone('America/Chicago')
 
 # Load environment variables from .env file
 load_dotenv()
@@ -38,12 +43,12 @@ LABEL_TO_PROJECT_MAPPING = {
 }
 
 DUE_TIME_SECTIONS = {
-    "Due 9am": {"due_string": "9am", "due_lang": "en"},
-    "Due 12pm": {"due_string": "12pm", "due_lang": "en"},
-    "Due 5pm": {"due_string": "5pm", "due_lang": "en"},
+    "Due 9am": {"due_string": "today at 9am", "due_lang": "en"},
+    "Due 12pm": {"due_string": "today at 12pm", "due_lang": "en"},
+    "Due 5pm": {"due_string": "today at 5pm", "due_lang": "en"},
     "Tomorrow": {"due_string": "tomorrow", "due_lang": "en"},
     "This Weekend": {"due_string": "saturday", "due_lang": "en"},
-    "Next Week": {"due_string": "next monday", "due_lang": "en"},
+    "Next Week": {"due_string": "on monday", "due_lang": "en"},
     "In 1 hour": {"due_string": "+1 hour", "due_lang": "en", "add_reminder": True},
 }
 
@@ -71,7 +76,6 @@ async def set_reminder(api: TodoistAPI, task_id: str) -> bool:
                 item_id=task_id,
                 type="relative",
                 minute_offset=0,
-                due=task.due
             )
             api.add_reminder(reminder)
             api.commit()
@@ -102,8 +106,6 @@ async def add_label_to_task(api: TodoistAPI, task_id: str, label: str) -> bool:
         logging.error(f"Failed to add label {label} to task {task_id}. Error: {str(e)}")
         return False
 
-
-
 async def set_due_date(api: TodoistAPI, task_id: str, due_string: str, due_lang: str = "en", add_duration: bool = False) -> bool:
     try:
         logging.debug(f"Setting due date for task {task_id} with due_string: {due_string}")
@@ -116,7 +118,7 @@ async def set_due_date(api: TodoistAPI, task_id: str, due_string: str, due_lang:
             if len(parts) == 2:
                 amount = int(parts[0])
                 unit = parts[1].lower()
-                now = datetime.now()
+                now = datetime.now(USER_TIMEZONE)
                 if unit in ['hour', 'hours']:
                     due_date = now + timedelta(hours=amount)
                 elif unit in ['day', 'days']:
@@ -124,15 +126,24 @@ async def set_due_date(api: TodoistAPI, task_id: str, due_string: str, due_lang:
                 elif unit in ['week', 'weeks']:
                     due_date = now + timedelta(weeks=amount)
                 elif unit in ['month', 'months']:
-                    due_date = now + relativedelta(months=amount)
+                    due_date = now + relativedelta.relativedelta(months=amount)
                 else:
                     raise ValueError(f"Unsupported time unit: {unit}")
                 
-                task.due = Due(date=due_date.strftime("%Y-%m-%d"), datetime=due_date.strftime("%Y-%m-%dT%H:%M:%S"))
+                # Convert to UTC for storage
+                due_date_utc = due_date.astimezone(pytz.UTC)
+                
+                task.due = Due(
+                    date=due_date_utc.strftime("%Y-%m-%dT%H:%M:%S.000000Z"),
+                    timezone=str(USER_TIMEZONE),
+                    string=f"{due_date.strftime('%Y-%m-%d')} at {due_date.strftime('%I:%M %p')}",
+                    lang=due_lang
+                )
             else:
                 raise ValueError(f"Invalid relative time format: {due_string}")
         else:
-            task.due = Due(string=due_string, lang=due_lang)
+            # For non-relative times, let Todoist handle the parsing
+            task.due = Due(string=due_string, lang=due_lang, timezone=str(USER_TIMEZONE))
         
         if add_duration:
             task.duration = {"unit": "minute", "amount": 60}
@@ -140,7 +151,7 @@ async def set_due_date(api: TodoistAPI, task_id: str, due_string: str, due_lang:
         api.update_task(task_id=task.id, task=task)
         api.commit()
         
-        logging.info(f"Set due date to '{due_string}' for task {task_id}")
+        logging.info(f"Set due date to '{task.due.string}' for task {task_id}")
         if add_duration:
             logging.info(f"Added 1 hour duration to task {task_id}")
         return True
