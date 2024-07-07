@@ -2,6 +2,8 @@ version: '3'
 services:
   todoist-inbox-organizer:
     build: .
+    volumes:
+      - .:/app
     ports:
       - "8008:8008"
     environment:

@@ -148,3 +148,6 @@ dmypy.json
 Dockerfile
 docker-compose.yml
 .DS_Store
+
+
+.netrc

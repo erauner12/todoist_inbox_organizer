@@ -6,4 +6,4 @@ pytest-anyio
 python-dotenv
 trio
 todoist-python
-synctodoist
+synctodoist==0.3.4 --extra-index-url https://pypi.erauner.synology.me/simple
