@@ -21,6 +21,8 @@ logging.basicConfig(level=logging.DEBUG, format=logging_format)
 
 app = FastAPI(debug=DEBUG)
 
+INBOX_PROJECT_ID = "2236493795"
+
 SECTION_TO_LABEL_MAPPING = {
     "Work": "context/work",
     "Home": "context/home",
@@ -34,9 +36,9 @@ LABEL_TO_PROJECT_MAPPING = {
 }
 
 DUE_TIME_SECTIONS = {
-    "Due 9am": {"due_string": "today at 9am", "due_lang": "en"},
-    "Due 12pm": {"due_string": "today at 12pm", "due_lang": "en"},
-    "Due 5pm": {"due_string": "today at 5pm", "due_lang": "en"},
+    "Due 9am": {"due_string": "9am", "due_lang": "en"},
+    "Due 12pm": {"due_string": "12pm", "due_lang": "en"},
+    "Due 5pm": {"due_string": "5pm", "due_lang": "en"},
 }
 
 class WebhookTask(BaseModel):
@@ -110,7 +112,7 @@ async def move_task_to_project(api: TodoistAPI, task_id: str, project_id: str) -
         task = api.get_task(task_id=task_id)
         project = api.get_project(project_id=project_id)
         
-        api.move_task(task=task, project=project)
+        api.move_task(task=task, project=project.id)
         api.commit()
         
         logging.info(f"Moved task {task_id} to project {project_id}")
@@ -120,31 +122,17 @@ async def move_task_to_project(api: TodoistAPI, task_id: str, project_id: str) -
         return False
 
 async def process_task(api: TodoistAPI, task: Task):
-    # Check for "later" label
-    if "later" in task.labels:
-        # Move to "Later" section in the same project
-        success = await move_task_to_section(api, task.id, task.project_id, "Later")
-        if success:
-            # Remove due date
-            task.due = None
-            
-            # Remove "later" label
-            task.labels = [label for label in task.labels if label != "later"]
-            
-            api.update_task(task_id=task.id, task=task)
-            api.commit()
-            logging.info(f"Moved task {task.id} to Later section, removed due date, and removed 'later' label")
-        return  # Exit function after processing "later" label
+    if task.project_id != INBOX_PROJECT_ID or not task.section_id:
+        return  # Only process tasks in the Inbox project and in a section
     
-    # Process specific sections
+    # First, try to process context label (Home, Work, Side)
+    context_processed = await process_context_label(api, task)
+    if context_processed:
+        return  # Exit function if context label was processed
+    
+    # Process specific sections for due dates
     if task.section_id:
         section_name = await get_section_name(api, task.section_id)
-        
-        # Add context label
-        if section_name in SECTION_TO_LABEL_MAPPING:
-            label = SECTION_TO_LABEL_MAPPING[section_name]
-            await add_label_to_task(api, task.id, label)
-            logging.info(f"Processed task {task.id}. Added label {label}")
         
         # Set due date and duration
         if section_name == "Due Today":
@@ -158,12 +146,17 @@ async def process_task(api: TodoistAPI, task: Task):
     logging.info(f"Finished processing task {task.id}")
     
 async def process_context_label(api: TodoistAPI, task: Task):
-    for label in task.labels:
+    section_name = await get_section_name(api, task.section_id) if task.section_id else None
+    if section_name in SECTION_TO_LABEL_MAPPING:
+        label = SECTION_TO_LABEL_MAPPING[section_name]
         if label in LABEL_TO_PROJECT_MAPPING:
             target_project_id = LABEL_TO_PROJECT_MAPPING[label]
-            await move_task_to_project_and_section(api, task.id, target_project_id, "Inbox")
-            logging.info(f"Moved task {task.id} to project {target_project_id} based on label {label}")
-            break
+            success = await move_task_to_project(api, task.id, target_project_id)
+            if success:
+                await add_label_to_task(api, task.id, label)
+                logging.info(f"Moved task {task.id} to project {target_project_id} and added label {label}")
+            return True
+    return False
         
 async def move_task_to_section(api: TodoistAPI, task_id: str, project_id: str, section_name: str) -> bool:
     try:
@@ -182,22 +175,6 @@ async def move_task_to_section(api: TodoistAPI, task_id: str, project_id: str, s
     except Exception as e:
         logging.error(f"Failed to move task {task_id} to section {section_name} in project {project_id}. Error: {str(e)}")
         return False
-
-async def get_or_create_section(api: TodoistAPI, project_id: str, section_name: str) -> Optional[Section]:
-    try:
-        sections = api.sections.find(f"^{section_name}$", field="name", return_all=True)
-        for section in sections:
-            if section.project_id == project_id:
-                return section
-        
-        # If no section exists, create one
-        new_section = Section(name=section_name, project_id=project_id)
-        api.add_section(new_section)
-        api.commit()
-        return new_section
-    except Exception as e:
-        logging.error(f"Failed to get or create {section_name} section for project {project_id}. Error: {str(e)}")
-        return None
 
 async def get_or_create_section(api: TodoistAPI, project_id: str, section_name: str) -> Optional[Section]:
     try:
