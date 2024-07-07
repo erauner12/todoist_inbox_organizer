@@ -106,12 +106,11 @@ async def add_label_to_task(api: TodoistAPI, task_id: str, label: str) -> bool:
         logging.error(f"Failed to add label {label} to task {task_id}. Error: {str(e)}")
         return False
 
-async def set_due_date(api: TodoistAPI, task_id: str, due_string: str, due_lang: str = "en") -> bool:
+async def set_due_date(api: TodoistAPI, task_id: str, due_string: str, due_lang: str = "en", add_duration: bool = False) -> bool:
     try:
         logging.debug(f"Setting due date for task {task_id} with due_string: {due_string}")
         
         task = api.get_task(task_id=task_id)
-        add_duration = False
         
         if due_string.startswith("+"):
             # Handle relative time
@@ -122,7 +121,6 @@ async def set_due_date(api: TodoistAPI, task_id: str, due_string: str, due_lang:
                 now = datetime.now(USER_TIMEZONE)
                 if unit in ['hour', 'hours']:
                     due_date = now + timedelta(hours=amount)
-                    add_duration = True  # Add duration for relative time in hours
                 elif unit in ['day', 'days']:
                     due_date = now + timedelta(days=amount)
                 elif unit in ['week', 'weeks']:
