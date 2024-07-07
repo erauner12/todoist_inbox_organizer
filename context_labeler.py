@@ -39,6 +39,10 @@ DUE_TIME_SECTIONS = {
     "Due 9am": {"due_string": "9am", "due_lang": "en"},
     "Due 12pm": {"due_string": "12pm", "due_lang": "en"},
     "Due 5pm": {"due_string": "5pm", "due_lang": "en"},
+    "Tomorrow": {"due_string": "tomorrow", "due_lang": "en"},
+    "This Weekend": {"due_string": "saturday", "due_lang": "en"},
+    "Next Week": {"due_string": "next monday", "due_lang": "en"},
+    "In 1 hour": {"due_string": "+1 hour", "due_lang": "en", "add_reminder": True},
 }
 
 class WebhookTask(BaseModel):
@@ -56,6 +60,17 @@ def get_todoist_api():
     api = TodoistAPI(api_key=TODOIST_API_KEY)
     api.sync()
     return api
+
+async def set_reminder(api: TodoistAPI, task_id: str, remind_time: str) -> bool:
+    try:
+        reminder = Reminder(item_id=task_id, type="relative", minute_offset=0, string=remind_time)
+        api.add_reminder(reminder)
+        api.commit()
+        logging.info(f"Added reminder '{remind_time}' to task {task_id}")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to add reminder to task {task_id}. Error: {str(e)}")
+        return False
 
 async def get_section_name(api: TodoistAPI, section_id: str) -> Optional[str]:
     section = api.get_section(section_id=section_id)
@@ -79,7 +94,14 @@ async def set_due_date(api: TodoistAPI, task_id: str, due_string: str, due_lang:
         logging.debug(f"Setting due date for task {task_id} with due_string: {due_string}")
         
         task = api.get_task(task_id=task_id)
-        task.due = Due(string=due_string, lang=due_lang)
+        
+        if due_string.startswith("+"):
+            # Handle relative time
+            hours = int(due_string.split()[1])
+            due_date = datetime.now() + timedelta(hours=hours)
+            task.due = Due(date=due_date.strftime("%Y-%m-%d"), datetime=due_date.strftime("%Y-%m-%dT%H:%M:%S"))
+        else:
+            task.due = Due(string=due_string, lang=due_lang)
         
         if add_duration:
             task.duration = {"unit": "minute", "amount": 60}
@@ -134,14 +156,17 @@ async def process_task(api: TodoistAPI, task: Task):
     if task.section_id:
         section_name = await get_section_name(api, task.section_id)
         
-        # Set due date and duration
-        if section_name == "Due Today":
+        if section_name in DUE_TIME_SECTIONS:
+            due_info = DUE_TIME_SECTIONS[section_name]
+            await set_due_date(api, task.id, due_info["due_string"], due_info["due_lang"], add_duration=due_info.get("add_duration", False))
+            logging.info(f"Processed task {task.id}. Set due date to {due_info['due_string']}")
+            
+            if due_info.get("add_reminder", False):
+                await set_reminder(api, task.id, "at time of due date")
+                logging.info(f"Added reminder to task {task.id}")
+        elif section_name == "Due Today":
             await set_due_date(api, task.id, "today")
             logging.info(f"Processed task {task.id}. Set due date to today")
-        elif section_name in DUE_TIME_SECTIONS:
-            due_info = DUE_TIME_SECTIONS[section_name]
-            await set_due_date(api, task.id, due_info["due_string"], due_info["due_lang"], add_duration=True)
-            logging.info(f"Processed task {task.id}. Set due date to {due_info['due_string']} with 1 hour duration")
 
     logging.info(f"Finished processing task {task.id}")
     
