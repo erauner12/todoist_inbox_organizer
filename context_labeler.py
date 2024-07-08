@@ -6,7 +6,7 @@ from fastapi import FastAPI, BackgroundTasks, Depends
 from pydantic import BaseModel
 from starlette.requests import Request
 from synctodoist import TodoistAPI
-from synctodoist.models import Task, Project, Section
+from synctodoist.models import Task, Project, Section, Due, Reminder
 
 # Load environment variables from .env file
 load_dotenv()
@@ -58,6 +58,29 @@ async def create_default_sections(api: TodoistAPI, project_id: str):
     api.commit()
     logging.info(f"Created default sections for project {project_id}")
 
+async def create_default_task(api: TodoistAPI, project_id: str):
+    default_task = Task(
+        content="Move this project to the appropriate workspace",
+        project_id=project_id,
+        labels=["todoist_admin"],
+        due=Due(string="today at 5pm", lang="en")
+    )
+    api.add_task(default_task)
+    api.commit()
+    
+    # Get the created task to add a reminder
+    created_task = api.get_task(task_id=default_task.id)
+    
+    reminder = Reminder(
+        item_id=created_task.id,
+        type="absolute",
+        due=created_task.due
+    )
+    api.add_reminder(reminder)
+    api.commit()
+    
+    logging.info(f"Created default task with reminder for project {project_id}")
+
 async def get_or_create_project(api: TodoistAPI, project_name: str) -> Project:
     try:
         project = api.find_project(pattern=f"^{project_name}$")
@@ -70,6 +93,9 @@ async def get_or_create_project(api: TodoistAPI, project_name: str) -> Project:
         
         # Create default sections for the new project
         await create_default_sections(api, project.id)
+        
+        # Create default task with reminder
+        await create_default_task(api, project.id)
     
     return project
 
