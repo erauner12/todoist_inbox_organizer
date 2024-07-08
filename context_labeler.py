@@ -6,7 +6,7 @@ from fastapi import FastAPI, BackgroundTasks, Depends
 from pydantic import BaseModel
 from starlette.requests import Request
 from synctodoist import TodoistAPI
-from synctodoist.models import Task, Project
+from synctodoist.models import Task, Project, Section
 
 # Load environment variables from .env file
 load_dotenv()
@@ -22,6 +22,14 @@ app = FastAPI(debug=DEBUG)
 
 # Define the Inbox project ID
 INBOX_PROJECT_ID = "2236493795"
+
+# Define the sections to be created for new projects
+DEFAULT_SECTIONS = [
+    "Next Up--",
+    "Next Actions=-",
+    "Someday",
+    "Waiting For"
+]
 
 class WebhookTask(BaseModel):
     id: str
@@ -43,6 +51,13 @@ async def get_section_name(api: TodoistAPI, section_id: str) -> Optional[str]:
     section = api.get_section(section_id=section_id)
     return section.name if section else None
 
+async def create_default_sections(api: TodoistAPI, project_id: str):
+    for section_name in DEFAULT_SECTIONS:
+        new_section = Section(name=section_name, project_id=project_id)
+        api.add_section(new_section)
+    api.commit()
+    logging.info(f"Created default sections for project {project_id}")
+
 async def get_or_create_project(api: TodoistAPI, project_name: str) -> Project:
     try:
         project = api.find_project(pattern=f"^{project_name}$")
@@ -52,6 +67,10 @@ async def get_or_create_project(api: TodoistAPI, project_name: str) -> Project:
         api.add_project(new_project)
         api.commit()
         project = api.find_project(pattern=f"^{project_name}$")
+        
+        # Create default sections for the new project
+        await create_default_sections(api, project.id)
+    
     return project
 
 async def move_task_to_project(api: TodoistAPI, task_id: str, project_name: str) -> bool:
