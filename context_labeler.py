@@ -104,19 +104,62 @@ async def move_task_to_project(api: TodoistAPI, task_id: str, project_name: str)
         api.move_task(task=task, project=project.id)
         api.commit()
         
+        gtd_labels_to_remove = []
         for label in task.labels:
             if label in LABEL_TO_SECTION:
                 section_name = LABEL_TO_SECTION[label]
-                section = next((s for s in api.sections._dict_values() if s.name == section_name and s.project_id == project.id), None)
-                if section:
-                    api.move_task(task=task, section=section.id)
-                    api.commit()
-                    break
+                if await move_task_to_section(api, task, section_name):
+                    gtd_labels_to_remove.append(label)
+        
+        for label in gtd_labels_to_remove:
+            task.labels.remove(label)
+            api.update_task(task_id=task.id, task=task)
+        api.commit()
         
         logging.info(f"Moved task {task_id} to project {project_name}")
         return True
     except Exception as e:
         logging.error(f"Failed to move task {task_id} to project {project_name}. Error: {str(e)}")
+        return False
+
+async def get_or_create_section(api: TodoistAPI, project_id: str, section_name: str) -> Optional[Section]:
+    logging.info(f"Attempting to get or create section '{section_name}' in project {project_id}")
+    try:
+        sections = api.sections.find(f"^{section_name}", field="name", return_all=True)
+        for section in sections:
+            if section.project_id == project_id and section.name.startswith(section_name):
+                logging.info(f"Found existing section: {section.name}")
+                return section
+        
+        if project_id != INBOX_PROJECT_ID:
+            logging.info(f"Section '{section_name}' not found, creating new section")
+            new_section = Section(name=section_name, project_id=project_id)
+            api.add_section(new_section)
+            api.commit()
+            logging.info(f"Created new section: {new_section.name}")
+            return new_section
+        else:
+            logging.info(f"Not creating section '{section_name}' in Inbox project")
+            return None
+    except Exception as e:
+        logging.error(f"Failed to get or create {section_name} section for project {project_id}. Error: {str(e)}")
+        return None
+
+async def move_task_to_section(api: TodoistAPI, task: Task, section_name: str) -> bool:
+    try:
+        section = await get_or_create_section(api, task.project_id, section_name)
+        
+        if section:
+            api.move_task(task=task, section=section.id)
+            api.commit()
+            
+            logging.info(f"Moved task {task.id} to section {section.name} in project {task.project_id}")
+            return True
+        else:
+            logging.error(f"Failed to move task {task.id}: couldn't find or create section {section_name}")
+            return False
+    except Exception as e:
+        logging.error(f"Failed to move task {task.id} to section {section_name} in project {task.project_id}. Error: {str(e)}")
         return False
 
 async def process_task(api: TodoistAPI, task: Task):
