@@ -8,10 +8,8 @@ from starlette.requests import Request
 from synctodoist import TodoistAPI
 from synctodoist.models import Task, Project, Section, Due, Reminder
 
-# Load environment variables from .env file
 load_dotenv()
 
-# Access environment variables
 DEBUG = os.getenv("DEBUG", "False").lower() == "true"
 TODOIST_API_KEY = os.getenv("TODOIST_API_KEY")
 
@@ -20,16 +18,20 @@ logging.basicConfig(level=logging.DEBUG, format=logging_format)
 
 app = FastAPI(debug=DEBUG)
 
-# Define the Inbox project ID
 INBOX_PROJECT_ID = "2236493795"
 
-# Define the sections to be created for new projects
 DEFAULT_SECTIONS = [
     "Next Up--",
     "Next Actions=-",
     "Someday",
     "Waiting For"
 ]
+
+LABEL_TO_SECTION = {
+    "gtd/ready": "Next Actions",
+    "gtd/waiting": "Waiting For",
+    "gtd/someday": "Someday"
+}
 
 class WebhookTask(BaseModel):
     id: str
@@ -68,7 +70,6 @@ async def create_default_task(api: TodoistAPI, project_id: str):
     api.add_task(default_task)
     api.commit()
     
-    # Get the created task to add a reminder
     created_task = api.get_task(task_id=default_task.id)
     
     reminder = Reminder(
@@ -85,16 +86,12 @@ async def get_or_create_project(api: TodoistAPI, project_name: str) -> Project:
     try:
         project = api.find_project(pattern=f"^{project_name}$")
     except Exception:
-        # If project doesn't exist, create it
         new_project = Project(name=project_name)
         api.add_project(new_project)
         api.commit()
         project = api.find_project(pattern=f"^{project_name}$")
         
-        # Create default sections for the new project
         await create_default_sections(api, project.id)
-        
-        # Create default task with reminder
         await create_default_task(api, project.id)
     
     return project
@@ -107,6 +104,15 @@ async def move_task_to_project(api: TodoistAPI, task_id: str, project_name: str)
         api.move_task(task=task, project=project.id)
         api.commit()
         
+        for label in task.labels:
+            if label in LABEL_TO_SECTION:
+                section_name = LABEL_TO_SECTION[label]
+                section = next((s for s in api.sections._dict_values() if s.name == section_name and s.project_id == project.id), None)
+                if section:
+                    api.move_task(task=task, section=section.id)
+                    api.commit()
+                    break
+        
         logging.info(f"Moved task {task_id} to project {project_name}")
         return True
     except Exception as e:
@@ -115,10 +121,10 @@ async def move_task_to_project(api: TodoistAPI, task_id: str, project_name: str)
 
 async def process_task(api: TodoistAPI, task: Task):
     if task.project_id != INBOX_PROJECT_ID or not task.section_id:
-        return  # Only process tasks in the Inbox project and in a section
+        return
     
     section_name = await get_section_name(api, task.section_id)
-    if section_name:
+    if section_name and section_name not in LABEL_TO_SECTION.values():
         await move_task_to_project(api, task.id, section_name)
         logging.info(f"Processed task {task.id}. Moved to project {section_name}")
 
@@ -127,7 +133,6 @@ async def todoist_webhook(webhook: Webhook, background_tasks: BackgroundTasks, a
     if webhook.event_name in ["item:added", "item:updated"]:
         task_id = webhook.event_data.id
         
-        # Fetch the latest task information
         try:
             task = api.get_task(task_id=task_id)
         except Exception as e:
