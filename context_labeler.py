@@ -200,3 +200,7 @@ async def custom_exception_handler(request: Request, exc: Exception):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8008)
+
+# TODO: create a todoist section for Sitting tasks out so that they do not have a next_action label
+# TODO: add a section for "Sitting" tasks
+# TODO: add a section for "Next Up--" tasks
