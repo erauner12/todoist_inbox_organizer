@@ -20,6 +20,9 @@ logging.basicConfig(level=logging.DEBUG, format=logging_format)
 
 app = FastAPI(debug=DEBUG)
 
+# Define the Inbox project ID
+INBOX_PROJECT_ID = "2236493795"
+
 class WebhookTask(BaseModel):
     id: str
     project_id: str
@@ -66,19 +69,13 @@ async def move_task_to_project(api: TodoistAPI, task_id: str, project_name: str)
         return False
 
 async def process_task(api: TodoistAPI, task: Task):
-    if not task.project_id or not task.section_id:
-        return  # Only process tasks in a project and in a section
-    
-    inbox_project = api.find_project(pattern="Inbox")
-    if task.project_id != inbox_project.id:
-        return  # Only process tasks in the Inbox project
+    if task.project_id != INBOX_PROJECT_ID or not task.section_id:
+        return  # Only process tasks in the Inbox project and in a section
     
     section_name = await get_section_name(api, task.section_id)
     if section_name:
         await move_task_to_project(api, task.id, section_name)
         logging.info(f"Processed task {task.id}. Moved to project {section_name}")
-
-processed_tasks = {}
 
 @app.post("/todoist/")
 async def todoist_webhook(webhook: Webhook, background_tasks: BackgroundTasks, api: TodoistAPI = Depends(get_todoist_api)):
@@ -92,7 +89,11 @@ async def todoist_webhook(webhook: Webhook, background_tasks: BackgroundTasks, a
             logging.error(f"Failed to fetch task {task_id}. Error: {str(e)}")
             return "ok"
 
-        logging.info(f"Task {task_id} {webhook.event_name.split(':')[1]} in project {task.project_id}, section {task.section_id}")
+        if task.project_id != INBOX_PROJECT_ID:
+            logging.info(f"Skipping task {task_id} as it's not in the Inbox project")
+            return "ok"
+
+        logging.info(f"Task {task_id} {webhook.event_name.split(':')[1]} in Inbox project, section {task.section_id}")
         
         background_tasks.add_task(process_task, api, task)
 
