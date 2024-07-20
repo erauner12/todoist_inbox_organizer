@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from starlette.requests import Request
 from synctodoist import TodoistAPI
 from synctodoist.models import Task, Project, Section, Due, Reminder
+from datetime import datetime, date
 
 load_dotenv()
 
@@ -162,14 +163,28 @@ async def move_task_to_section(api: TodoistAPI, task: Task, section_name: str) -
         logging.error(f"Failed to move task {task.id} to section {section_name} in project {task.project_id}. Error: {str(e)}")
         return False
 
+def has_due_date(due: Due) -> bool:
+    return due is not None and due.date is not None
+
 async def process_task(api: TodoistAPI, task: Task):
-    if task.project_id != INBOX_PROJECT_ID or not task.section_id:
+    if task.project_id != INBOX_PROJECT_ID:
         return
-    
-    section_name = await get_section_name(api, task.section_id)
-    if section_name and section_name not in LABEL_TO_SECTION.values():
-        await move_task_to_project(api, task.id, section_name)
-        logging.info(f"Processed task {task.id}. Moved to project {section_name}")
+
+    if has_due_date(task.due):
+        if "gtd/ready" not in task.labels:
+            task.labels.append("gtd/ready")
+            api.update_task(task_id=task.id, task=task)
+            api.commit()
+            logging.info(f"Added 'gtd/ready' label to task {task.id} due to having a due date")
+
+    if task.section_id:
+        section_name = await get_section_name(api, task.section_id)
+        if section_name and section_name not in LABEL_TO_SECTION.values():
+            success = await move_task_to_project(api, task.id, section_name)
+            if success:
+                logging.info(f"Processed task {task.id}. Moved to project {section_name}")
+            else:
+                logging.error(f"Failed to move task {task.id} to project {section_name}")
 
 @app.post("/todoist/")
 async def todoist_webhook(webhook: Webhook, background_tasks: BackgroundTasks, api: TodoistAPI = Depends(get_todoist_api)):
