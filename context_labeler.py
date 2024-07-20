@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from starlette.requests import Request
 from synctodoist import TodoistAPI
 from synctodoist.models import Task, Project, Section, Due, Reminder
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 load_dotenv()
 
@@ -34,6 +34,8 @@ LABEL_TO_SECTION = {
     "gtd/someday": "Someday"
 }
 
+processed_tasks = {}
+
 class WebhookTask(BaseModel):
     id: str
     project_id: str
@@ -50,18 +52,40 @@ def get_todoist_api():
     api.sync()
     return api
 
-async def get_section_name(api: TodoistAPI, section_id: str) -> Optional[str]:
+def get_section_name(api: TodoistAPI, section_id: str) -> Optional[str]:
     section = api.get_section(section_id=section_id)
     return section.name if section else None
 
-async def create_default_sections(api: TodoistAPI, project_id: str):
+def create_default_sections(api: TodoistAPI, project_id: str):
     for section_name in DEFAULT_SECTIONS:
         new_section = Section(name=section_name, project_id=project_id)
         api.add_section(new_section)
     api.commit()
     logging.info(f"Created default sections for project {project_id}")
 
-async def get_or_create_project(api: TodoistAPI, project_name: str) -> Project:
+def create_default_task(api: TodoistAPI, project_id: str):
+    default_task = Task(
+        content="Move this project to the appropriate workspace",
+        project_id=project_id,
+        labels=["todoist_admin"],
+        due=Due(string="today at 5pm", lang="en")
+    )
+    api.add_task(default_task)
+    api.commit()
+    
+    created_task = api.get_task(task_id=default_task.id)
+    
+    reminder = Reminder(
+        item_id=created_task.id,
+        type="absolute",
+        due=created_task.due
+    )
+    api.add_reminder(reminder)
+    api.commit()
+    
+    logging.info(f"Created default task with reminder for project {project_id}")
+
+def get_or_create_project(api: TodoistAPI, project_name: str) -> Project:
     try:
         project = api.find_project(pattern=f"^{project_name}$")
     except Exception:
@@ -70,14 +94,15 @@ async def get_or_create_project(api: TodoistAPI, project_name: str) -> Project:
         api.commit()
         project = api.find_project(pattern=f"^{project_name}$")
         
-        await create_default_sections(api, project.id)
+        create_default_sections(api, project.id)
+        create_default_task(api, project.id)
     
     return project
 
-async def move_task_to_project(api: TodoistAPI, task_id: str, project_name: str) -> bool:
+def move_task_to_project(api: TodoistAPI, task_id: str, project_name: str) -> bool:
     try:
         task = api.get_task(task_id=task_id)
-        project = await get_or_create_project(api, project_name)
+        project = get_or_create_project(api, project_name)
         
         api.move_task(task=task, project=project.id)
         api.commit()
@@ -86,7 +111,7 @@ async def move_task_to_project(api: TodoistAPI, task_id: str, project_name: str)
         for label in task.labels:
             if label in LABEL_TO_SECTION:
                 section_name = LABEL_TO_SECTION[label]
-                if await move_task_to_section(api, task, section_name):
+                if move_task_to_section(api, task, section_name):
                     gtd_labels_to_remove.append(label)
         
         for label in gtd_labels_to_remove:
@@ -100,7 +125,7 @@ async def move_task_to_project(api: TodoistAPI, task_id: str, project_name: str)
         logging.error(f"Failed to move task {task_id} to project {project_name}. Error: {str(e)}")
         return False
 
-async def get_or_create_section(api: TodoistAPI, project_id: str, section_name: str) -> Optional[Section]:
+def get_or_create_section(api: TodoistAPI, project_id: str, section_name: str) -> Optional[Section]:
     logging.info(f"Attempting to get or create section '{section_name}' in project {project_id}")
     try:
         sections = api.sections.find(f"^{section_name}", field="name", return_all=True)
@@ -123,9 +148,9 @@ async def get_or_create_section(api: TodoistAPI, project_id: str, section_name: 
         logging.error(f"Failed to get or create {section_name} section for project {project_id}. Error: {str(e)}")
         return None
 
-async def move_task_to_section(api: TodoistAPI, task: Task, section_name: str) -> bool:
+def move_task_to_section(api: TodoistAPI, task: Task, section_name: str) -> bool:
     try:
-        section = await get_or_create_section(api, task.project_id, section_name)
+        section = get_or_create_section(api, task.project_id, section_name)
         
         if section:
             api.move_task(task=task, section=section.id)
@@ -143,7 +168,20 @@ async def move_task_to_section(api: TodoistAPI, task: Task, section_name: str) -
 def has_due_date(due: Due) -> bool:
     return due is not None and due.date is not None
 
-async def process_task(api: TodoistAPI, task: Task):
+def has_due_time(due: Due) -> bool:
+    return due is not None and due.date is not None and isinstance(due.date, datetime)
+
+def add_relative_reminder(api: TodoistAPI, task: Task):
+    reminder = Reminder(
+        item_id=task.id,
+        type="relative",
+        due=task.due
+    )
+    api.add_reminder(reminder)
+    api.commit()
+    logging.info(f"Added relative reminder to task {task.id}")
+
+def process_task(api: TodoistAPI, task: Task):
     if task.project_id != INBOX_PROJECT_ID:
         return
 
@@ -153,11 +191,14 @@ async def process_task(api: TodoistAPI, task: Task):
             api.update_task(task_id=task.id, task=task)
             api.commit()
             logging.info(f"Added 'gtd/ready' label to task {task.id} due to having a due date")
+    
+    if has_due_time(task.due):
+        add_relative_reminder(api, task)
 
     if task.section_id:
-        section_name = await get_section_name(api, task.section_id)
+        section_name = get_section_name(api, task.section_id)
         if section_name and section_name not in LABEL_TO_SECTION.values():
-            success = await move_task_to_project(api, task.id, section_name)
+            success = move_task_to_project(api, task.id, section_name)
             if success:
                 logging.info(f"Processed task {task.id}. Moved to project {section_name}")
             else:
@@ -165,24 +206,35 @@ async def process_task(api: TodoistAPI, task: Task):
 
 @app.post("/todoist/")
 async def todoist_webhook(webhook: Webhook, background_tasks: BackgroundTasks, api: TodoistAPI = Depends(get_todoist_api)):
+    logging.info(f"Received webhook: event_name={webhook.event_name}, task_id={webhook.event_data.id}")
+    
     if webhook.event_name in ["item:added", "item:updated"]:
         task_id = webhook.event_data.id
+        
+        if task_id in processed_tasks:
+            last_processed_time = processed_tasks[task_id]
+            if datetime.now() - last_processed_time < timedelta(seconds=5):
+                logging.info(f"Skipping task {task_id} as it was processed recently.")
+                return {"message": "Task skipped due to recent processing"}
         
         try:
             task = api.get_task(task_id=task_id)
         except Exception as e:
             logging.error(f"Failed to fetch task {task_id}. Error: {str(e)}")
-            return "ok"
+            return {"message": "Failed to fetch task"}
 
         if task.project_id != INBOX_PROJECT_ID:
             logging.info(f"Skipping task {task_id} as it's not in the Inbox project")
-            return "ok"
+            return {"message": "Task not in Inbox project"}
 
-        logging.info(f"Task {task_id} {webhook.event_name.split(':')[1]} in Inbox project, section {task.section_id}")
-        
+        logging.info(f"Adding task {task_id} to background processing")
         background_tasks.add_task(process_task, api, task)
+        processed_tasks[task_id] = datetime.now()
+        
+        return {"message": "Task processing initiated"}
 
-    return "ok"
+    logging.info(f"Event not processed: {webhook.event_name}")
+    return {"message": "Event not processed"}
 
 @app.exception_handler(Exception)
 async def custom_exception_handler(request: Request, exc: Exception):
